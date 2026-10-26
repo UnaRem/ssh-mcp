@@ -1,0 +1,26 @@
+{
+  "defaults": {
+    "host_key_policy": "tofu"
+  },
+  "hosts": {
+    "lan": {
+      "hostname": "192.168.1.21",
+      "port": 22,
+      "user": "unarem",
+      "password": "把密码写在这里，文件不要提交到 git"
+    },
+    "app-key": {
+      "hostname": "10.0.0.5",
+      "user": "deploy",
+      "identity_files": ["~/.ssh/id_ed25519"],
+      "host_key_policy": "strict"
+    },
+    "v6-with-passphrase": {
+      "hostname": "2001:db8::10",
+      "port": 2222,
+      "user": "root",
+      "identity_files": ["~/.ssh/id_ed25519"],
+      "key_passphrase": "私钥口令（可选）"
+    }
+  }
+}
