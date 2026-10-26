@@ -240,7 +240,7 @@ export function buildServer(): McpServer {
       instructions:
         "本 server 通过 SSH 连接远端 Linux 主机（Use it for remote Linux hosts over SSH）。" +
         "先 ssh_hosts 列主机；跑命令用 ssh_exec / ssh_batch；需要保持 cd 与环境变量用 session_open + session_exec；" +
-        "传文件用 sftp_*（upload = sftp_put，download = sftp_get）。命令退出码非 0 是数据，不是工具错误。",
+        "传文件用 sftp_*（upload = sftp_upload，download = sftp_download）。命令退出码非 0 是数据，不是工具错误。",
     },
   );
 
@@ -260,8 +260,8 @@ export function buildServer(): McpServer {
     sftp_read: "Keywords: sftp read remote file cat view log file contents text",
     sftp_write: "Keywords: sftp write create remote file append edit config file",
     sftp_mkdir: "Keywords: sftp create remote directory mkdir make folder",
-    sftp_put: "Keywords: sftp upload file send file to remote server transfer up",
-    sftp_get: "Keywords: sftp download file fetch from remote server transfer down",
+    sftp_upload: "Keywords: sftp upload file send file to remote server transfer up",
+    sftp_download: "Keywords: sftp download file fetch from remote server transfer down",
   };
   // 只改 description 文本，工具名与 schema 不动（名称影响 mcp 前缀与既有调用）
   const rawRegister = mcp.registerTool.bind(mcp) as (n: string, c: Record<string, unknown>, h: unknown) => void;
@@ -516,7 +516,7 @@ export function buildServer(): McpServer {
       title: "读远端文件",
       description:
         `读远端文本文件（默认最多 ${sftlops.MAX_TEXT_BYTES} 字节）。超过上限会 truncated=true 并回报真实大小；` +
-        "更大的文件请用 sftp_get 落到本地。",
+        "更大的文件请用 sftp_download 落到本地。",
       inputSchema: {
         host: hostArg,
         path: z.string().min(1),
@@ -544,7 +544,7 @@ export function buildServer(): McpServer {
     {
       title: "写远端文件",
       description:
-        `写入远端文本文件（最多 ${sftlops.MAX_TEXT_BYTES} 字节，超出请改用 sftp_put）。` +
+        `写入远端文本文件（最多 ${sftlops.MAX_TEXT_BYTES} 字节，超出请改用 sftp_upload）。` +
         "append=true 追加；mode 可设权限（八进制字符串如 0644）。",
       inputSchema: {
         host: hostArg,
@@ -602,7 +602,7 @@ export function buildServer(): McpServer {
   );
 
   mcp.registerTool(
-    "sftp_put",
+    "sftp_upload",
     {
       title: "上传文件",
       description:
@@ -619,7 +619,7 @@ export function buildServer(): McpServer {
       },
     },
     async (args) =>
-      guard("sftp_put", args.host, async () => {
+      guard("sftp_upload", args.host, async () => {
         const a = await acquire(targetOf(args));
         const s = await sftlops.openSftp(a.conn.conn);
         try {
@@ -633,7 +633,7 @@ export function buildServer(): McpServer {
   );
 
   mcp.registerTool(
-    "sftp_get",
+    "sftp_download",
     {
       title: "下载文件",
       description:
@@ -650,7 +650,7 @@ export function buildServer(): McpServer {
       },
     },
     async (args) =>
-      guard("sftp_get", args.host, async () => {
+      guard("sftp_download", args.host, async () => {
         const a = await acquire(targetOf(args));
         const s = await sftlops.openSftp(a.conn.conn);
         try {

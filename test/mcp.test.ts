@@ -26,8 +26,8 @@ const REQUIRED_TOOLS = [
   "sftp_read",
   "sftp_write",
   "sftp_mkdir",
-  "sftp_put",
-  "sftp_get",
+  "sftp_upload",
+  "sftp_download",
 ];
 
 /** 启动一次 server，跑一段检查，然后关掉进程并确认它真的退出。 */

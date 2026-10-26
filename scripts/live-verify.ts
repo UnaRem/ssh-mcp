@@ -304,18 +304,18 @@ async function main() {
     return `created=${JSON.stringify(mk.created ?? [])} 已存在标注=${JSON.stringify(mk2.already_existing ?? [])} 写读一致 size=${rd.size} list 含 written.txt；max_bytes=8 → truncated，total_bytes=${big.total_bytes}`;
   });
 
-  await check("C11 sftp_put / sftp_get 往返一致 + 远端 sha256sum 比对", async () => {
-    const put = await mustOk(cl, "sftp_put", { host: HOST, local_path: localFile, remote_path: remoteDir + "/up.txt" });
+  await check("C11 sftp_upload / sftp_download 往返一致 + 远端 sha256sum 比对", async () => {
+    const put = await mustOk(cl, "sftp_upload", { host: HOST, local_path: localFile, remote_path: remoteDir + "/up.txt" });
     assert.equal(put.sha256_local, localSha);
     const remote = await mustOk(cl, "ssh_exec", { host: HOST, command: `sha256sum ${remoteDir}/up.txt` });
     assert.equal(remote.exit_code, 0);
     const remoteSha = String(remote.stdout).trim().split(/\s+/)[0];
     assert.equal(remoteSha, localSha, "远端 sha256sum 与本地不一致");
-    const dup = await call(cl, "sftp_put", { host: HOST, local_path: localFile, remote_path: remoteDir + "/up.txt" });
+    const dup = await call(cl, "sftp_upload", { host: HOST, local_path: localFile, remote_path: remoteDir + "/up.txt" });
     assert.equal(dup.isError, true, "默认应当拒绝覆盖");
-    const forced = await mustOk(cl, "sftp_put", { host: HOST, local_path: localFile, remote_path: remoteDir + "/up.txt", overwrite: true });
+    const forced = await mustOk(cl, "sftp_upload", { host: HOST, local_path: localFile, remote_path: remoteDir + "/up.txt", overwrite: true });
     assert.equal(forced.bytes_match, true, "overwrite 后字节数应一致");
-    const get = await mustOk(cl, "sftp_get", { host: HOST, remote_path: remoteDir + "/up.txt", local_path: localBack });
+    const get = await mustOk(cl, "sftp_download", { host: HOST, remote_path: remoteDir + "/up.txt", local_path: localBack });
     assert.equal(sha256(fs.readFileSync(localBack)), localSha, "下载回来的内容不一致");
     const tooBig = await call(cl, "sftp_read", { host: HOST, path: remoteDir + "/up.txt", max_bytes: 1 });
     assert.equal((tooBig.p as any).truncated, true);

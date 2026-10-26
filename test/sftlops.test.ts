@@ -271,7 +271,7 @@ describe("sftp_mkdir", () => {
   });
 });
 
-describe("sftp_put / sftp_get", () => {
+describe("sftp_upload / sftp_download", () => {
   const local = path.join(tmpDir, "roundtrip.bin");
 
   test("put 往返一致并校验字节数", async () => {
