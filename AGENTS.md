@@ -72,6 +72,12 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
   要 `stat` 一下才知道是「已存在」。
 - 连接池按 `user@host:port` 复用，与本地 profile 无关；要验证「密钥优先」或 TOFU 重新校验，必须新建 server 进程或把
   `SSH_MCP_CONN_TTL_MS` 调小。
+- 客户端（PI-Desktop `pi-mcp-adapter`）的工具检索是 ASCII 词法匹配，分词丢弃中文：纯中文 description
+ 等于没有，模型找不到工具（实测 `ssh` 查询只命中 `ssh_hosts`/`session_open`，不命中 `ssh_exec`）。
+ 因此每个工具 description 末尾要带 ASCII `Keywords:`，且 server 带 `instructions`。改 description 文本
+ 不动工具名与 schema（名称决定 `mcp_` 前缀与既有调用）。PI-Desktop 还有 `mcp.json` 的 `searchKeywords`
+ 机制（按工具名/`*`，仅影响排序）。改了 description 或 `searchKeywords` 后当前会话工具目录不刷新，
+ 要完整重启 PI-Desktop 才重新发现。
 
 ## 环境事实的维护
 

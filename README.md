@@ -45,6 +45,38 @@ bun install
 `ssh_hosts`、`ssh_exec`、`ssh_batch`、`session_open`、`session_exec`、`session_reset`、`session_close`、
 `sftp_list`、`sftp_stat`、`sftp_read`、`sftp_write`、`sftp_mkdir`、`sftp_put`、`sftp_get`。
 
+### 2.1 让客户端能检索到工具（重要）
+
+很多客户端（含 PI-Desktop 的 `pi-mcp-adapter`）靠词法匹配 `name`/`server`/`description` 来决定
+是否把工具加载进上下文。**它的分词只保留 ASCII**：中文描述实测完全不参与匹配，纯中文 description
+会让模型「找不到工具」。两处都已处理：
+
+1. **服务端（可移植，已实现）**：每个工具 description 末尾追加 ASCII `Keywords: ...`，
+   server 还带 `instructions` 说明何时用哪个工具。改的是文本，工具名与 schema 不动。
+2. **客户端（PI-Desktop 专有）**：`mcp.json` 的该 server 下可加 `searchKeywords`，按工具名给关键词，
+   `"*"` 为全 server 通用。它只影响排序，不展示给模型。示例：
+
+```json
+  "ssh-mcp": {
+    "command": "C:/Users/UnaRem/.bun/bin/bun.exe",
+    "args": ["run", "C:/Files/Codes/ssh_mcp/src/index.ts"],
+    "env": { "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json" },
+    "searchKeywords": {
+      "*": ["ssh", "remote", "server", "linux"],
+      "ssh_exec": ["run command on remote server", "exec", "df disk usage", "uname", "grep log"],
+      "sftp_put": ["upload file", "send file to remote host"],
+      "sftp_get": ["download file", "fetch remote file"]
+    }
+  }
+```
+
+实测（用 adapter 自带的 `scoreToolMatch` 评分，已提交工具元数据）：仅 description 关键词就能让
+`"check disk usage on the server"` 命中 `ssh_exec`；叠加 `searchKeywords` 分数更高、排序更稳。
+
+**改动 `mcp.json`（含 `searchKeywords`）或工具 description 后，当前会话的工具目录不会自动刷新：**
+adapter 日志会写 `direct tools frozen after initial sync — reconnects won't rebuild the system prompt`。
+需要**完整退出并重启 PI-Desktop**（不是只重连 server），或在适配器里用 `mcp({ connect: "server" })` 重新发现。
+
 ## 3. 主机与认证
 
 ### 3.1 主机解析顺序
