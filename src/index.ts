@@ -234,8 +234,42 @@ function parseMode(m?: string): number | undefined {
 
 // ---------- 工具注册 ----------
 export function buildServer(): McpServer {
-  const mcp = new McpServer({ name: "ssh-mcp", version: VERSION });
+  const mcp = new McpServer(
+    { name: "ssh-mcp", version: VERSION },
+    {
+      instructions:
+        "本 server 通过 SSH 连接远端 Linux 主机（Use it for remote Linux hosts over SSH）。" +
+        "先 ssh_hosts 列主机；跑命令用 ssh_exec / ssh_batch；需要保持 cd 与环境变量用 session_open + session_exec；" +
+        "传文件用 sftp_*（upload = sftp_put，download = sftp_get）。命令退出码非 0 是数据，不是工具错误。",
+    },
+  );
 
+  // 工具检索关键词并入 description：PI-Desktop 这类客户端按 name/server/description 做词法检索，
+  // 且分词只保留 ASCII（实测中文描述完全不参与匹配，英文意图查询「无匹配」），
+  // 只靠中文描述会让模型找不到工具。关键词写成 ASCII，任何客户端都能命中。
+  const hints: Record<string, string> = {
+    ssh_hosts: "Keywords: ssh list hosts remote servers available aliases inventory",
+    ssh_exec: "Keywords: ssh run command execute remotely shell exec exit code stdout stderr disk usage df uname systemctl grep log",
+    ssh_batch: "Keywords: ssh run several commands batch multiple steps one connection",
+    session_open: "Keywords: ssh open remote terminal persistent shell interactive session keep cwd working directory",
+    session_exec: "Keywords: ssh run command in session cd export environment variable shell state preserved",
+    session_reset: "Keywords: ssh reset shell restart session back to login directory",
+    session_close: "Keywords: ssh close session end remote shell logout",
+    sftp_list: "Keywords: sftp list remote directory files folder contents ls",
+    sftp_stat: "Keywords: sftp remote file info size permissions mode mtime",
+    sftp_read: "Keywords: sftp read remote file cat view log file contents text",
+    sftp_write: "Keywords: sftp write create remote file append edit config file",
+    sftp_mkdir: "Keywords: sftp create remote directory mkdir make folder",
+    sftp_put: "Keywords: sftp upload file send file to remote server transfer up",
+    sftp_get: "Keywords: sftp download file fetch from remote server transfer down",
+  };
+  // 只改 description 文本，工具名与 schema 不动（名称影响 mcp 前缀与既有调用）
+  const rawRegister = mcp.registerTool.bind(mcp) as (n: string, c: Record<string, unknown>, h: unknown) => void;
+  mcp.registerTool = ((name: string, config: Record<string, unknown>, handler: unknown) => {
+    const hint = hints[name];
+    const cfg = hint ? { ...config, description: `${String(config.description ?? "")} ${hint}` } : config;
+    rawRegister(name, cfg, handler);
+  }) as typeof mcp.registerTool;
   mcp.registerTool(
     "ssh_hosts",
     {
