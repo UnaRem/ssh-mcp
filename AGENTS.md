@@ -78,6 +78,11 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
  不动工具名与 schema（名称决定 `mcp_` 前缀与既有调用）。PI-Desktop 还有 `mcp.json` 的 `searchKeywords`
  机制（按工具名/`*`，仅影响排序）。改了 description 或 `searchKeywords` 后当前会话工具目录不刷新，
  要完整重启 PI-Desktop 才重新发现。
+- PI-Desktop 的可见工具名 = `mcp_` + 规范化后的 mcp.json server 键（`-` → `_`）+ `_` + 工具原名
+  （实测：`git` 的 `git_status` → `mcp_git_git_status`；`chrome-devtools` → `mcp_chrome_devtools_*`）。
+  因此 server 键 `ssh-mcp` + 工具 `ssh_exec` 得到 `mcp_ssh_mcp_ssh_exec`（前缀与工具名重复）。adapter 的
+  `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，PI-Desktop 直接注册路径不受它影响
+  （推断，未实测）。要缩短名字只能改 server 键或工具名，`toolPrefix` 无用。
 
 ## 环境事实的维护
 
