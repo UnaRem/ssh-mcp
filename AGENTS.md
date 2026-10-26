@@ -80,9 +80,13 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
  要完整重启 PI-Desktop 才重新发现。
 - PI-Desktop 的可见工具名 = `mcp_` + 规范化后的 mcp.json server 键（`-` → `_`）+ `_` + 工具原名
   （实测：`git` 的 `git_status` → `mcp_git_git_status`；`chrome-devtools` → `mcp_chrome_devtools_*`）。
-  因此 server 键 `ssh-mcp` + 工具 `ssh_exec` 得到 `mcp_ssh_mcp_ssh_exec`（前缀与工具名重复）。adapter 的
-  `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，PI-Desktop 直接注册路径不受它影响
+  因此 server 键会直接进入工具名：曾用 `ssh-mcp` 得到 `mcp_ssh_mcp_ssh_exec`（前缀与工具名重复，2026-10-26 已改为 `ssh` → `mcp_ssh_ssh_exec`）。
+  adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，PI-Desktop 直接注册路径不受它影响
   （推断，未实测）。要缩短名字只能改 server 键或工具名，`toolPrefix` 无用。
+- 改名 `sftp_put`/`sftp_get` → `sftp_upload`/`sftp_download`（2026-10-26）：实测用 adapter 的 `scoreToolMatch`，
+  `"upload file to server"` 185→281、`"download remote file"` 145→241，其余查询分数不变。反例是「全部去掉协议前缀」：
+  单词 `ssh` 查询 562→432、`execute a command over ssh` 332→292，且泛化名（`run`/`read`/`list`）会与本地
+  `fastctx` 工具互抢。检索按 token 去重计分，所以名字里重复的 `ssh`/`mcp` 不加分也不减分，重叠只是观感问题。
 
 ## 环境事实的维护
 

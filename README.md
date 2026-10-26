@@ -25,7 +25,7 @@ bun install
 ```json
 {
   "mcpServers": {
-    "ssh-mcp": {
+    "ssh": {
       "command": "bun",
       "args": ["run", "C:/Files/Codes/ssh_mcp/src/index.ts"],
       "env": {
@@ -36,14 +36,16 @@ bun install
 }
 ```
 
-本机 PI-Desktop 的 MCP 配置在 `~/.pi/agent/mcp.json`（同样的 `mcpServers` 形状），已按上面的片段登记为 `ssh-mcp`；
+本机 PI-Desktop 的 MCP 配置在 `~/.pi/agent/mcp.json`（同样的 `mcpServers` 形状），已按上面的片段登记为 `ssh`。
+**server 键别写成 `ssh-mcp`**：PI-Desktop 的可见工具名 = `mcp_` + server 键（`-`→`_`）+ `_` + 工具原名，
+`ssh-mcp` 会得到 `mcp_ssh_mcp_ssh_exec`（前缀与工具名重复），`ssh` 得到 `mcp_ssh_ssh_exec`，更短且宽泛查询更容易命中。
 `command` 用 bun 的绝对路径（`C:/Users/UnaRem/.bun/bin/bun.exe`）以免受 GUI 进程 PATH 差异影响。**改完这个文件要完整退出并重启 PI-Desktop 进程才会重新发现工具，只重连 server 无效（原因见 2.1）。**
 不设 `SSH_MCP_CONFIG` 时 server 会退回 `<进程 cwd>/config.local.json`，所以显式写绝对路径更稳。
 也可以写 `bun start`（`package.json` 的 `start` 脚本就是 `bun run src/index.ts`），但 MCP 客户端里推荐上面的直接形式，少一层进程。
 
 启动后 `tools/list` 应返回 14 个工具：
 `ssh_hosts`、`ssh_exec`、`ssh_batch`、`session_open`、`session_exec`、`session_reset`、`session_close`、
-`sftp_list`、`sftp_stat`、`sftp_read`、`sftp_write`、`sftp_mkdir`、`sftp_put`、`sftp_get`。
+`sftp_list`、`sftp_stat`、`sftp_read`、`sftp_write`、`sftp_mkdir`、`sftp_upload`、`sftp_download`。
 
 ### 2.1 让客户端能检索到工具（重要）
 
@@ -57,15 +59,15 @@ bun install
    `"*"` 为全 server 通用。它只影响排序，不展示给模型。示例：
 
 ```json
-  "ssh-mcp": {
+  "ssh": {
     "command": "C:/Users/UnaRem/.bun/bin/bun.exe",
     "args": ["run", "C:/Files/Codes/ssh_mcp/src/index.ts"],
     "env": { "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json" },
     "searchKeywords": {
       "*": ["ssh", "remote", "server", "linux"],
       "ssh_exec": ["run command on remote server", "exec", "df disk usage", "uname", "grep log"],
-      "sftp_put": ["upload file", "send file to remote host"],
-      "sftp_get": ["download file", "fetch remote file"]
+      "sftp_upload": ["upload file", "send file to remote host"],
+      "sftp_download": ["download file", "fetch remote file"]
     }
   }
 ```
@@ -152,10 +154,10 @@ adapter 日志会写 `direct tools frozen after initial sync — reconnects won'
 | `sftp_list` | `host` `path` [`include_hidden`] | `~` 展开为远端用户家目录（用 `realpath .` 求得） |
 | `sftp_stat` | `host` `path` | type/size/mode/mtime/uid/gid |
 | `sftp_read` | `host` `path` [`max_bytes`] | 文本读；超限时 `truncated=true` 且 `total_bytes` 是真实大小 |
-| `sftp_write` | `host` `path` `content` [`append` `mode`] | 上限 512 KiB，更大文件用 `sftp_put` |
+| `sftp_write` | `host` `path` `content` [`append` `mode`] | 上限 512 KiB，更大文件用 `sftp_upload` |
 | `sftp_mkdir` | `host` `path` [`recursive`] | 已存在的目录列入 `already_existing`，不报错 |
-| `sftp_put` | `host` `local_path` `remote_path` [`overwrite`] | 返回 `local_bytes`/`remote_bytes`/`bytes_match` |
-| `sftp_get` | `host` `remote_path` `local_path` [`overwrite`] | 本地父目录自动创建 |
+| `sftp_upload` | `host` `local_path` `remote_path` [`overwrite`] | 返回 `local_bytes`/`remote_bytes`/`bytes_match` |
+| `sftp_download` | `host` `remote_path` `local_path` [`overwrite`] | 本地父目录自动创建 |
 
 其他保证：
 
