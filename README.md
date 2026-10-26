@@ -36,8 +36,10 @@ bun install
 }
 ```
 
-若客户端不读 `env`，就不要设 `SSH_MCP_CONFIG`：server 会退回 `<进程 cwd>/config.local.json`。
-启动方式也可以是 `bun start`（`package.json` 的 `start` 脚本等价于 `bun run src/index.ts`）。
+本机 PI-Desktop 的 MCP 配置在 `~/.pi/agent/mcp.json`（同样的 `mcpServers` 形状），已按上面的片段登记为 `ssh-mcp`；
+`command` 用 bun 的绝对路径（`C:/Users/UnaRem/.bun/bin/bun.exe`）以免受 GUI 进程 PATH 差异影响。**改完这个文件要重启 PI-Desktop 才会加载。**
+不设 `SSH_MCP_CONFIG` 时 server 会退回 `<进程 cwd>/config.local.json`，所以显式写绝对路径更稳。
+也可以写 `bun start`（`package.json` 的 `start` 脚本就是 `bun run src/index.ts`），但 MCP 客户端里推荐上面的直接形式，少一层进程。
 
 启动后 `tools/list` 应返回 14 个工具：
 `ssh_hosts`、`ssh_exec`、`ssh_batch`、`session_open`、`session_exec`、`session_reset`、`session_close`、
