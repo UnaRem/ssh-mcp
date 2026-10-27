@@ -81,6 +81,12 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
 - PI-Desktop 的可见工具名 = `mcp_` + 规范化后的 server 身份名（`-` → `_`）+ `_` + 工具原名。
   **身份名取 `src/index.ts` 里 `new McpServer({ name })`，不是 mcp.json 的 server 键**（实测 2026-10-26：改 mcp.json 的键无效，
   只有这里的 `name` 决定前缀）。先前「server 键进入工具名」是从 `git`/`chrome-devtools` 推的，它们的 `name` 恰好与键相同，是混淆样本。
+- 不同客户端的命名来源不同，两侧要分别决定，别拿一边的改动去「统一」另一边（实测 2026-10-27）：
+  OpenCode 用 `~/.config/opencode/opencode.json` 的 mcp 键作命名空间（现为 `ssh-tool` → `tools["ssh-tool"].ssh_exec`），
+  **不读** serverInfo 的 `name`；PI-Desktop 用 `name` 拼 `mcp_` 前缀，改 mcp.json 的键无效。
+  所以 OpenCode 的键叫什么都不会与工具名重复；`name` 只能按 PI-Desktop 的约束取 `ssh`（`ssh-tool` 会得到
+  `mcp_ssh_tool_ssh_batch`，`ssh` 段被隔开重复，与出过错的形态同类——推断，未实测）。
+  OpenCode 改这个键不需要重启：配置文件热重载，MCP server 随之重启（`opencode mcp list` 可见 `ssh-tool connected`）。
 - 前缀与工具名交错重复会让模型写错工具名：`name: "ssh-mcp"` 时真实名 `mcp_ssh_mcp_ssh_batch`，实测 5 次调用全错——
   4 次漏写 `ssh_` 段（`mcp_ssh_mcp_batch`/`mcp_ssh_mcp_exec`，调用回落为文本）、1 次重复段（`mcp_ssh_mcp_mcp_ssh_batch`）。
   2026-10-26 改 `name: "ssh"` → `mcp_ssh_ssh_*`（只剩一个 `ssh` 段，无交错）。改完要在 PI-Desktop 端删掉 mcp.json 里旧的

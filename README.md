@@ -45,6 +45,10 @@ bun install
 不设 `SSH_MCP_CONFIG` 时 server 会退回 `<进程 cwd>/config.local.json`，所以显式写绝对路径更稳。
 也可以写 `bun start`（`package.json` 的 `start` 脚本就是 `bun run src/index.ts`），但 MCP 客户端里推荐上面的直接形式，少一层进程。
 
+另一类客户端不这样命名：OpenCode 用它配置文件（`~/.config/opencode/opencode.json`）里的 mcp 键作命名空间
+（本机登记为 `ssh-tool` → `tools["ssh-tool"].ssh_exec`），**不读**服务端的身份名，改键即时热重载、不用重启。
+两边的命名来源不同：PI-Desktop 的前缀改 `src/index.ts` 的 `name`，OpenCode 只改它的键。
+
 启动后 `tools/list` 应返回 14 个工具：
 `ssh_hosts`、`ssh_exec`、`ssh_batch`、`session_open`、`session_exec`、`session_reset`、`session_close`、
 `sftp_list`、`sftp_stat`、`sftp_read`、`sftp_write`、`sftp_mkdir`、`sftp_upload`、`sftp_download`。
