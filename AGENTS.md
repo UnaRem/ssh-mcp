@@ -75,6 +75,9 @@ LICENSE          MIT
    配置文件放 exe 同级会被自动找到（客户端零 env）；三处都没有则首启自动生成模板（只创建不覆盖，TOFU 同款）。
    放别处靠 `SSH_MCP_CONFIG` 绝对路径。源码直跑没有「exe 同级」可言（execPath 是 bun），此时必须显式给，
    cwd 兜底在客户端不可靠。
+   本机实例（2026-10-27）：OpenCode 连接走零 env——`~/tools/` 放 exe 与 `config.local.json`（含真实 profile，
+   从仓库那份复制）；仓库 `config.local.json` 仍由 live/dist-verify 使用。**两份配置，改一处记得同步另一处**；
+   配置每次调用都重读，改完即时生效、不用重启客户端。
 
 验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
 不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 12 项，重点看 `--compile` 后依赖是否真的带着走）。
