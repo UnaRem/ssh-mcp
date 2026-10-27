@@ -54,6 +54,11 @@ bun install
 （本机登记为 `ssh-tool` → `tools["ssh-tool"].ssh_run`），**不读**服务端的身份名，改键即时热重载、不用重启。
 两边的命名来源不同：PI-Desktop 的前缀改 `src/index.ts` 的 `name`，OpenCode 只改它的键。
 
+实测（2026-10-27）：OpenCode 改配置会重启该 MCP server（`opencode mcp list` 显示 connected），
+但**当前进程的工具目录不会重建**——同一进程里新开的会话/子会话仍看到旧工具名。
+服务端换了工具面（如 14 个工具改成 2 个）之后，要完整退出并重启 OpenCode，agent 侧才会出现新名字。
+在那之前只能用协议层验收（`bun run live` 走的就是真实 stdio 握手与 `tools/call`）。
+
 启动后 `tools/list` 只返回两个工具：`ssh_run`、`ssh_file`。
 这是刻意的窄面（判据见 `docs/domain.md`）；`ssh_run` 不传任何参数就是自省模式，
 返回可用主机清单、配置来源、活动连接与会话——原本用来「先看有哪些主机」的那次调用被省掉了。
