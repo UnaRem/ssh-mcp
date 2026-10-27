@@ -76,9 +76,11 @@ LICENSE          MIT
 验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
 不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 11 项，重点看 `--compile` 后依赖是否真的带着走）。
 
-**自动发布（只 windows-x64）**：改完版本号 → 提交 → `git tag v<version> && git push origin v<version>` →
-`.github/workflows/release.yml` 跑：装依赖（靠 `bun.lock`）→ tag 与 `package.json` 版本必须一致（不一致直接失败）→
-lint + 离线测试 → `--target=bun-windows-x64` 编译 → `dist-verify --offline` 自检 → zip 附到 Release。
+**自动发布（只 windows-x64，push 驱动）**：发版 = 把 `package.json` 的 `version` 改一行 → push 到 main →
+`.github/workflows/release.yml` 跑：装依赖（靠 `bun.lock`）→ 查远端有没有 `v<version>` tag（有就整段跳过，
+这就是「版本号没变就不发新版」）→ lint + 离线测试 → `--target=bun-windows-x64` 编译 → `dist-verify --offline`
+自检 → zip → `action-gh-release` 在该 commit 创建 tag 并挂附件，Release 说明由 commit 历史自动生成。
+不手动打 tag：tag 由 CI 建，保证 tag ↔ commit ↔ `package.json.version` 三者对应（这是「版本单一来源」的延伸）。
 产物 exe 约 96 MiB，逼近 GitHub 单资产 100 MiB 上限，**一律 zip**（压缩后约 37 MiB）。
 不发布其它平台：要加就新增一个 job，并且先在 CI 里跑通该 target 的产物自检（`cpu-features` 能否带着走是未测项）。
 

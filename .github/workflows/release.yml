@@ -1,15 +1,14 @@
-# 打 tag（v*）就发一个 windows-x64 的单文件产物到 GitHub Release。
-# 只做当前需要的一个平台：产物只给 Windows 上的 MCP 客户端用（判据见 AGENTS.md 的「交付入口」）。
+# push 到 main 就检查版本：版本号（package.json）没发过 → 建 tag、编译、自检、挂 Release；发过 → 跳过。
+# 只发 windows-x64（产物只给 Windows 上的 MCP 客户端用，判据见 AGENTS.md「交付入口」）。
 # 关键约束：
-#   1) 编译后必须跑产物自检（--offline），构建期不报错不代表运行期没问题；
-#   2) 版本号只来自 package.json，tag 与它不一致就不发；
+#   1) 版本号只来自 package.json——发版 = 改那一行 + push，tag 由 CI 创建，保证 tag ↔ commit ↔ 版本三者对应；
+#   2) 编译后必须跑产物自检（--offline），构建期不报错不代表运行期没问题；
 #   3) exe 约 96 MiB，逼近单资产 100 MiB 上限，所以一律 zip（压缩后约 37 MiB）。
 name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +20,8 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 要查已有 tag
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -29,36 +30,46 @@ jobs:
       - name: 安装依赖（bun.lock 已入库，解析可重复）
         run: bun install --frozen-lockfile
 
-      - name: tag 与 package.json 的版本必须一致
-        shell: pwsh
+      - name: 版本判定：v<version> 已存在就跳过
+        id: ver
+        shell: bash
         run: |
-          $ver = (Get-Content package.json | ConvertFrom-Json).version
-          if ("v$ver" -ne "${{ github.ref_name }}") {
-            Write-Error "tag=${{ github.ref_name }} 与 package.json version=$ver 不一致：先改版本号再打 tag"
-            exit 1
-          }
-          Write-Output "版本一致：v$ver"
+          ver=$(bun -e 'console.log(require("./package.json").version)')
+          if git ls-remote origin "refs/tags/v$ver" | grep -q .; then
+            echo "should_release=false" >>"$GITHUB_OUTPUT"
+            echo "tag v$ver 已存在：package.json 的 version 没变，不发新版。"
+          else
+            echo "should_release=true" >>"$GITHUB_OUTPUT"
+            echo "version=$ver" >>"$GITHUB_OUTPUT"
+            echo "v$ver 未发布：将在本 commit 创建 tag v$ver 并发布。"
+          fi
 
       - name: 类型检查与离线测试
+        if: steps.ver.outputs.should_release == 'true'
         run: |
           bun run lint
           bun test
 
       - name: 编译单文件产物
+        if: steps.ver.outputs.should_release == 'true'
         run: bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/ssh-mcp.exe
 
       - name: 产物自检（离线档：CI 没有内网验收主机）
+        if: steps.ver.outputs.should_release == 'true'
         run: bun run dist-verify dist/ssh-mcp.exe --offline
 
       - name: 打包 zip
+        if: steps.ver.outputs.should_release == 'true'
         shell: pwsh
         run: |
-          $ver = (Get-Content package.json | ConvertFrom-Json).version
+          $ver = "${{ steps.ver.outputs.version }}"
           Compress-Archive -Path dist/ssh-mcp.exe -DestinationPath "dist/ssh-mcp-$ver-windows-x64.zip" -Force
           Get-ChildItem dist/*.zip | ForEach-Object { Write-Output ("{0}  {1:N1} MiB" -f $_.Name, ($_.Length / 1MB)) }
 
-      - name: 附到 Release
+      - name: 发布（tag_name 不存在则在此 commit 创建 tag；notes 由 commit 历史生成）
+        if: steps.ver.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ssh-mcp-*-windows-x64.zip
+          tag_name: v${{ steps.ver.outputs.version }}
           generate_release_notes: true
+          files: dist/ssh-mcp-*-windows-x64.zip

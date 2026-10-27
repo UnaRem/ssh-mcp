@@ -54,9 +54,10 @@ bun run dist-verify                             # 对 ~/tools/ssh-mcp.exe 跑 11
 - 更新流程：改完 `src/**` → `bun run build` → 覆盖安装位置的 exe → `bun run dist-verify`。
   exe 不入版本管理（`dist/` 已忽略），可判定的来源始终是源码。
   **覆盖前先退出 MCP 客户端**：客户端正持着这个 exe 时 Windows 不让写（实测 `cp: … Device or resource busy`）。
-- 也可以直接用发布产物：GitHub Release 按 tag 提供 `ssh-mcp-<版本>-windows-x64.zip`（解压即 `ssh-mcp.exe`）。
-  发布是 tag 驱动的：只改 `package.json` 的 `version` → 打 `v<版本>` 并推送 → CI 编译、离线自检、挂 zip；
-  tag 与 `package.json` 不一致会被 CI 挡下（版本号只写在 `package.json` 一处）。
+- 也可以直接用发布产物：GitHub Release 按版本提供 `ssh-mcp-<版本>-windows-x64.zip`（解压即 `ssh-mcp.exe`）。
+  发布是 push 驱动的：把 `package.json` 的 `version` 改一行并 push 到 main → CI 编译、离线自检、
+  在该 commit 创建 `v<版本>` tag 并挂 zip，Release 说明就是这段 commit；版本号没改的 push 会被跳过。
+  版本号只写在 `package.json` 一处，tag 由 CI 创建，不需要手动 `git tag`。
 - 实测（2026-10-27）：`--compile` 后行为与源码版一致——11 项验收连续三次 11/11，
   建连 589–615ms（源码版 527–589ms，同一量级；`cpu-features` 若加载失败会退回 JS crypto 而明显变慢，未见退化）。
   另记一次观察：产物刚 `cp` 落地后的第一次运行有 5 项以 transport 关闭的形式失败，随后三次全通过，未复现。
