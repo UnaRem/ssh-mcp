@@ -78,11 +78,15 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
  不动工具名与 schema（名称决定 `mcp_` 前缀与既有调用）。PI-Desktop 还有 `mcp.json` 的 `searchKeywords`
  机制（按工具名/`*`，仅影响排序）。改了 description 或 `searchKeywords` 后当前会话工具目录不刷新，
  要完整重启 PI-Desktop 才重新发现。
-- PI-Desktop 的可见工具名 = `mcp_` + 规范化后的 mcp.json server 键（`-` → `_`）+ `_` + 工具原名
-  （实测：`git` 的 `git_status` → `mcp_git_git_status`；`chrome-devtools` → `mcp_chrome_devtools_*`）。
-  因此 server 键会直接进入工具名：曾用 `ssh-mcp` 得到 `mcp_ssh_mcp_ssh_exec`（前缀与工具名重复，2026-10-26 已改为 `ssh` → `mcp_ssh_ssh_exec`）。
-  adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，PI-Desktop 直接注册路径不受它影响
-  （推断，未实测）。要缩短名字只能改 server 键或工具名，`toolPrefix` 无用。
+- PI-Desktop 的可见工具名 = `mcp_` + 规范化后的 server 身份名（`-` → `_`）+ `_` + 工具原名。
+  **身份名取 `src/index.ts` 里 `new McpServer({ name })`，不是 mcp.json 的 server 键**（实测 2026-10-26：改 mcp.json 的键无效，
+  只有这里的 `name` 决定前缀）。先前「server 键进入工具名」是从 `git`/`chrome-devtools` 推的，它们的 `name` 恰好与键相同，是混淆样本。
+- 前缀与工具名交错重复会让模型写错工具名：`name: "ssh-mcp"` 时真实名 `mcp_ssh_mcp_ssh_batch`，实测 5 次调用全错——
+  4 次漏写 `ssh_` 段（`mcp_ssh_mcp_batch`/`mcp_ssh_mcp_exec`，调用回落为文本）、1 次重复段（`mcp_ssh_mcp_mcp_ssh_batch`）。
+  2026-10-26 改 `name: "ssh"` → `mcp_ssh_ssh_*`（只剩一个 `ssh` 段，无交错）。改完要在 PI-Desktop 端删掉 mcp.json 里旧的
+  `ssh-mcp` 登记，否则同一 server 注册两份、工具目录翻倍。
+- adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，PI-Desktop 直接注册路径不受它影响
+  （推断，未实测）。要缩短名字只能改 `McpServer` 的 `name` 或工具名，`toolPrefix` 无用。
 - 改名 `sftp_put`/`sftp_get` → `sftp_upload`/`sftp_download`（2026-10-26）：实测用 adapter 的 `scoreToolMatch`，
   `"upload file to server"` 185→281、`"download remote file"` 145→241，其余查询分数不变。反例是「全部去掉协议前缀」：
   单词 `ssh` 查询 562→432、`execute a command over ssh` 332→292，且泛化名（`run`/`read`/`list`）会与本地

@@ -127,6 +127,14 @@ describe("MCP stdio server", () => {
     expect(meta.exited).toBe(true);
   });
 
+  test("server 身份名是 ssh：客户端前缀为 mcp_ssh_，不与工具名的 ssh_ 段交错重复", async () => {
+    // PI-Desktop 等客户端用 `mcp_<name>_` 前缀 + 工具原名。name 曾是 "ssh-mcp"，
+    // 得到 mcp_ssh_mcp_ssh_exec，模型实测会漏写或重复 ssh_ 段而调用失败。
+    await withServer(async (client) => {
+      expect(client.getServerVersion()?.name).toBe("ssh");
+    });
+  });
+
   test("ssh_hosts 读出 ssh_config 别名与本地 profile，不要求模型猜 IP", async () => {
     await withServer(async (client) => {
       const r = await client.callTool({ name: "ssh_hosts", arguments: {} });

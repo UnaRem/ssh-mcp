@@ -37,8 +37,10 @@ bun install
 ```
 
 本机 PI-Desktop 的 MCP 配置在 `~/.pi/agent/mcp.json`（同样的 `mcpServers` 形状），已按上面的片段登记为 `ssh`。
-**server 键别写成 `ssh-mcp`**：PI-Desktop 的可见工具名 = `mcp_` + server 键（`-`→`_`）+ `_` + 工具原名，
-`ssh-mcp` 会得到 `mcp_ssh_mcp_ssh_exec`（前缀与工具名重复），`ssh` 得到 `mcp_ssh_ssh_exec`，更短且宽泛查询更容易命中。
+工具名前缀由服务端自己决定：PI-Desktop 的可见工具名 = `mcp_` + server 身份名（`-`→`_`）+ `_` + 工具原名，
+身份名取 `src/index.ts` 里 `new McpServer({ name: "ssh" })`（实测 2026-10-26：改 mcp.json 的键不影响前缀）。
+旧的 `name: "ssh-mcp"` 会得到 `mcp_ssh_mcp_ssh_exec`，前缀与工具名交错重复，模型容易漏写或重复 `ssh_` 段而调用失败；
+现在是 `mcp_ssh_ssh_exec`。**如果以前在 mcp.json 里登记过 `ssh-mcp`，请把那条旧条目删掉**，否则同一个 server 注册两份，工具目录翻倍。
 `command` 用 bun 的绝对路径（`C:/Users/UnaRem/.bun/bin/bun.exe`）以免受 GUI 进程 PATH 差异影响。**改完这个文件要完整退出并重启 PI-Desktop 进程才会重新发现工具，只重连 server 无效（原因见 2.1）。**
 不设 `SSH_MCP_CONFIG` 时 server 会退回 `<进程 cwd>/config.local.json`，所以显式写绝对路径更稳。
 也可以写 `bun start`（`package.json` 的 `start` 脚本就是 `bun run src/index.ts`），但 MCP 客户端里推荐上面的直接形式，少一层进程。

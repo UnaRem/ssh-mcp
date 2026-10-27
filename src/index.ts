@@ -235,7 +235,10 @@ function parseMode(m?: string): number | undefined {
 // ---------- 工具注册 ----------
 export function buildServer(): McpServer {
   const mcp = new McpServer(
-    { name: "ssh-mcp", version: VERSION },
+    // name 会规范化成 PI-Desktop 工具前缀 `mcp_<name>_`（实测 2026-10-26：mcp.json 的 server 键不参与
+    // 命名，改键无效；只有这里的 name 决定前缀）。原 "ssh-mcp" 让工具名出现 ssh_..._ssh_ 重复段，
+    // 模型漏写段（mcp_ssh_mcp_batch）即回落文本；改 "ssh" 后为 mcp_ssh_ssh_exec。
+    { name: "ssh", version: VERSION },
     {
       instructions:
         "本 server 通过 SSH 连接远端 Linux 主机（Use it for remote Linux hosts over SSH）。" +
