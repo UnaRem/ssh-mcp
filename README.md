@@ -252,7 +252,7 @@ OpenCode 在把参数发出去之前，先用发布出去的 JSON Schema 校验�
 | `bad_input` | 缺 `command`、`session_op` 与 `command` 同时给、`op` 不是 put/get、多余参数 | `allowed_ops`、`active_sessions`；schema 的 `additionalProperties:false` |
 | `unknown_host` | 别名解析不出来 | `available_hosts`、`ssh_config_path`、`local_config_path` |
 | `connect_failed` / `auth_failed` / `host_key_mismatch` | 握手/凭据/host key | `hint`、`attempted_methods`、`host_key_fingerprint` |
-| `no_session` | 会话不存在或已被 TTL 回收 | `active_sessions`、空闲时长与 TTL |
+| `no_session` | 会话不存在或已被 TTL 回收；只凭 `keep` 找不到任何可复用 shell 时也是它（缺 `host` 的说明写在 `error` 里）——「会话不存在」只有这一种错误码 | `active_sessions`、空闲时长与 TTL |
 | `not_found` / `permission` / `exists` | 传输条目的文件系统情形（**按数据返回，调用本身不是错误**）。`exists` 判的是**目标**侧：put 看远端、get 看本地，目标已存在就先报 `exists`，不会再去看源——所以同一个 `local_path` 第二次 `get` 得到的是 `exists` 而不是 `not_found`（实测 2026-10-27） | 条目 `index`、路径 |
 | `internal` | 其它未归类 | `error`、`cause` |
 

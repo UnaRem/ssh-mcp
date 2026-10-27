@@ -78,7 +78,7 @@ config / backend / session / exec / sftlops / knownhosts / result   内部上下
 | `connect_failed` | TCP/KEX/握手/解析失败 | `hint`、`attempted_methods` |
 | `auth_failed` | 凭据被拒 | `attempted_methods`、`identity_offered` |
 | `host_key_mismatch` | known_hosts 与服务器密钥不符 | `host_key_fingerprint`、已记录条目 |
-| `no_session` | 会话不存在或已被 TTL 回收 | `active_sessions`、`idle_ms`/`ttl_ms` |
+| `no_session` | 会话不存在或已被 TTL 回收；也包括只凭 `keep` 找不到任何可复用的 shell（此时缺 host 的说明写进 `error`） | `active_sessions`、`idle_ms`/`ttl_ms` |
 | `not_found` / `permission` / `exists` | 传输条目对应的文件系统情形（**按数据返回，不是工具错误**） | 条目 `index`、路径 |
 | `internal` | 其它未归类 | `error`、`cause` |
 

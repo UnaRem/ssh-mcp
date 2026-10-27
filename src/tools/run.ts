@@ -74,9 +74,13 @@ async function resolveSession(ctx: BridgeCtx, a: RunArgs): Promise<{ session: Sh
         { active_sessions: active },
       );
     }
+    // 「会话不存在」只有一种错误码：这里虽然缺 host，但真实情形是没有任何可复用的 shell，
+    // 报 no_session 才与显式 session id 那条一致（缺 host 的说明写进 error/hint）。
     bridgeError(
-      "bad_input",
-      'session="keep" 需要同时传 host：要知道在哪台主机上保持这个 shell（当前也没有任何活动会话）。',
+      "no_session",
+      '当前没有任何活动会话，且没传 host——不知道要在哪台机器上开这个 shell。' +
+        '请同时传 host 与 session="keep"（会新建并复用同一个 shell）。',
+      { active_sessions: active },
     );
   }
   const acquired = await ctx.acquire({ host: a.host! });

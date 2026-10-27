@@ -236,12 +236,13 @@ describe("对外契约：可判定的失败", () => {
     });
   });
 
-  test('session="keep" 但没有 host 也没有活动会话：说清该怎么传', async () => {
+  test('session="keep" 但没有 host 也没有活动会话：error_code=no_session（会话不存在只有一种错误码）', async () => {
     await withServer(async (client) => {
       const r = await client.callTool({ name: "ssh_run", arguments: { session: "keep", command: "pwd" } });
       expect(r.isError).toBe(true);
       const p = payloadOf(r);
-      expect(p.error_code).toBe("bad_input");
+      expect(p.error_code).toBe("no_session");
+      expect(p.active_sessions).toBeArray();
       expect(textOf(r)).toContain("host");
     });
   });
