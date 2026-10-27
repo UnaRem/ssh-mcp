@@ -27,6 +27,7 @@ src/
 docs/domain.md   领域模型：判据（桥只补 shell 给不了的）、统一语言、不变量、错误码语义
 test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约
 scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.local.json
+scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来的 exe 走真实 stdio 握手 + tools/call
 .pi/goal/        目标契约；.pi/work/ 是临时探针，不入版本管理
 ```
 
@@ -46,6 +47,8 @@ scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.loc
 | `bun test` | `bun test` | 离线单测，全部不依赖网络（fake 替身 + `ssh2.Server` 进程内真服务器） |
 | `bun start` | `bun run src/index.ts` | 起 MCP server（stdio） |
 | `bun run live` | `bun run scripts/live-verify.ts` | 对真实主机跑端到端验收 |
+| `bun run build` | `bun build --compile src/index.ts --outfile dist/ssh-mcp.exe` | 单文件产物（`dist/` 不入库） |
+| `bun run dist-verify` | `bun run scripts/dist-verify.ts` | 对产物跑 11 项验收，默认 `~/tools/ssh-mcp.exe`，可传路径 |
 
 - 单跑某个文件：`bun test test/session.test.ts`。测试里 `beforeAll/afterAll` 是 Bun 的写法，**没有** `before/after`。
 - 改会话/哨兵/预检逻辑：`test/session.test.ts`、`test/exec.test.ts`；改连接与 host key：`test/backend.test.ts`、`test/knownhosts.test.ts`；
@@ -59,14 +62,25 @@ scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.loc
 
 ## 交付入口
 
-没有打包/部署脚本：交付物就是本仓库，客户端用绝对路径 `bun run <abs>/src/index.ts` 启动（见 README 的配置片段）。
-`scripts/live-verify.ts` 是验收入口：临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，不动真实文件，结束时清理远端临时目录。
+两种交付形态，源码始终是准的：
+
+1. **源码直跑**：客户端用绝对路径 `bun run <abs>/src/index.ts` 启动（README 第 2 节的配置片段）。
+2. **单文件产物**：`bun run build` → `dist/ssh-mcp.exe`（约 96 MiB，含 bun 运行时），装到 `~/tools/ssh-mcp.exe`，
+   客户端 `command` 直接指向它，对端不需要装 bun（README 1.1）。产物不入版本管理；
+   更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（11 项，全 PASS 才算完）。
+   配置一律靠 `SSH_MCP_CONFIG` 的绝对路径：产物里不含 `config.local.json`，靠 cwd 兜底在客户端不可靠。
+
+验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
+不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 11 项，重点看 `--compile` 后依赖是否真的带着走）。
 
 ## 版本与硬约束（实测 2026-10-26）
 
 - 运行时：bun 1.3.14（node v24.15 也能跑 `bun:test` 语法之外的东西，但测试只用 bun）。目标远端只支持 **Linux**。
 - 依赖固定：`@modelcontextprotocol/sdk@1.32.x`、`ssh2@1.17.0`、`ssh-config@5.3.0`、`zod@4.x`。
   `ssh2` 的 `cpu-features` 需要编译（装包约 30s），加载失败会退回 JS crypto——不影响正确性但会变慢。
+- 单文件产物（实测 2026-10-27）：`bun build --compile` 直接可用，产物 96.2 MiB（含 bun 运行时），只跑当前平台；
+  `cpu-features` 没被拆掉——产物建连 589–615ms 对源码版 527–589ms，同一量级（真退回 JS crypto 会明显变慢）。
+  跨平台产物（`--target=bun-linux-x64`）未测。
 - 验收主机：`unarem@192.168.1.21`（OpenSSH 9.6p1 Ubuntu，Linux 6.8.0-147-generic），密码认证；有 `sha256sum` 与 sftp 子系统。
   `~/.ssh/config` 里的 `los` 密钥被服务器拒绝，是「认证失败要快速可读」的反例，不作正向用例。
 - 连接成本：新建 SSH 连接实测 ~1.8s（到 los，TCP+KEX+认证失败）；复用同一条连接的一条命令实测 5–60ms。
@@ -116,6 +130,9 @@ scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.loc
 - 出错的调用**不要**无条件摘连接池项：`dropHost` 会连带关掉该主机上的会话，实测一次 `op` 写错的 `ssh_file`
   调用让 `keep` 会话凭空消失、后续 `session` 调用报 `no_session`。连接真的断了由 ssh2 的 `close`/`error` 事件摘除，
   空闲过 TTL 的在下次取用时判定丢弃（`acquire` 里必须在取用时判 TTL，只靠 30s 一次的清扫会让短 TTL 形同虚设）。
+- `--compile` 构建期不报错不代表运行期没问题：产物必须过 `scripts/dist-verify.ts`。
+  观察到一次（2026-10-27）产物刚复制到新位置后第一次运行有 5 项以 transport 关闭的形式失败，之后三次 11/11；
+  原因未查（怀疑新落地的 exe 被首次扫描拦截），别把它当成契约回归。
 
 ## 环境事实的维护
 

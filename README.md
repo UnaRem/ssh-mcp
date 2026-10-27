@@ -23,6 +23,40 @@ bun install
 
 依赖 `ssh2` 的 `cpu-features` 原生模块在装包时会编译（实测 2026-10-26 约 30s），加载成功后走原生 crypto。
 
+### 1.1 单文件产物（推荐给其它机器/客户端用）
+
+不要求对方装 bun：把 server 编译成一个可执行文件，客户端的 `command` 直接指向它。
+
+```bash
+cd C:/Files/Codes/ssh_mcp
+bun run build                                   # bun build --compile → dist/ssh-mcp.exe（约 96 MiB）
+cp dist/ssh-mcp.exe ~/tools/                    # 装到用户目录，路径与仓库位置解耦
+bun run dist-verify                             # 对 ~/tools/ssh-mcp.exe 跑 11 项端到端验收
+```
+
+接入片段（把 `command` 换成 exe 的绝对路径，其余与第 2 节相同）：
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "C:/Users/UnaRem/tools/ssh-mcp.exe",
+      "env": { "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json" }
+    }
+  }
+}
+```
+
+要点：
+
+- `SSH_MCP_CONFIG` 必须给绝对路径。产物里不含 `config.local.json`（含明文密码，永不入库），
+  不显式给就退回「进程 cwd 下的 config.local.json」，而客户端的 cwd 不可靠。
+- 更新流程：改完 `src/**` → `bun run build` → 覆盖安装位置的 exe → `bun run dist-verify`。
+  exe 不入版本管理（`dist/` 已忽略），可判定的来源始终是源码。
+- 实测（2026-10-27）：`--compile` 后行为与源码版一致——11 项验收连续三次 11/11，
+  建连 589–615ms（源码版 527–589ms，同一量级；`cpu-features` 若加载失败会退回 JS crypto 而明显变慢，未见退化）。
+  另记一次观察：产物刚 `cp` 落地后的第一次运行有 5 项以 transport 关闭的形式失败，随后三次全通过，未复现。
+
 ## 2. 接入 MCP 客户端
 
 用**绝对路径**启动，别用相对路径（客户端的工作目录不确定）：
@@ -225,10 +259,15 @@ bun test                     # 离线测试，不需要网络（fake ssh/sftp �
                              # test/contract.test.ts 锁的是对外契约：两个工具、参数集合、错误码、自省模式
 bun run live                 # 对真实主机跑 25 项端到端验收，读 config.local.json
 LIVE_HOST=lan bun run live
+bun run build                # 单文件产物 dist/ssh-mcp.exe（见 1.1）
+bun run dist-verify          # 对产物跑 11 项验收，默认验 ~/tools/ssh-mcp.exe；可传路径验 dist/
+bun run dist-verify dist/ssh-mcp.exe
 ```
 
 `live-verify` 会复制一份 `~/.ssh/known_hosts` 到临时目录来跑 TOFU/不匹配用例，不动真实文件，跑完清理远端临时目录。
 改完 `src/**` 的远端行为，收官必须跑一次 `bun run live`；只改文档不必跑。
+`bun run build` 之后必须跑 `bun run dist-verify`：`--compile` 把依赖（含 `ssh2` 的原生模块）打进单文件，
+构建期不报错不代表运行期没问题。
 
 ## 7. 边界
 
@@ -236,5 +275,6 @@ LIVE_HOST=lan bun run live
 - 不启用 ControlMaster/ControlPersist，不引入系统 ssh 子进程或 plink 后端。
 - 不做后台任务/job 家族（异步任务表、轮询取结果）：与「不留常驻进程」冲突，已取消。
 - 不把 SFTP 的 list/stat/read/write/mkdir 做成工具：远端 `ls`/`stat`/`sed`/`cat`/`mkdir -p` 更贴近模型既有能力。
-- 不做 npm 发布 / Docker / Web UI / 遥测。
+- 不做 npm 发布 / Docker / Web UI / 遥测。对外分发只走 `bun build --compile` 的单文件产物（见 1.1），
+  不引入包管理分发链路。
 - 不读写 `~/.ssh/config`，不改写私钥；对 `known_hosts` 仅追加。

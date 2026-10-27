@@ -7,7 +7,9 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "lint": "bunx tsc --noEmit",
-    "live": "bun run scripts/live-verify.ts"
+    "live": "bun run scripts/live-verify.ts",
+    "build": "bun build --compile src/index.ts --outfile dist/ssh-mcp.exe",
+    "dist-verify": "bun run scripts/dist-verify.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
