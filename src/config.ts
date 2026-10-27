@@ -70,7 +70,7 @@ export function sshConfigPath(): string {
 }
 
 interface ParsedSshConfig {
-  /** 可用于 ssh_hosts 列表的别名（不含通配模式） */
+  /** 可用于自省清单（不传参数调用 ssh_run）的别名（不含通配模式） */
   aliases: string[];
   /** 计算某别名得到的 OpenSSH 参数 */
   compute: (alias: string) => Record<string, string | string[]>;
@@ -206,7 +206,7 @@ function passwordFromEnv(alias: string): string | undefined {
      throw new ResolveError(
        `未知主机 "${name}"：既不在 ~/.ssh/config 的别名里，也不在本地 config.local.json 里，且不是 IP 字面量。`,
        availableAliases(),
-       "用 ssh_hosts 查看可用别名，或直接给 IP/域名（如 192.168.1.21）",
+       "用 ssh 别名，或直接给 IP/域名（如 192.168.1.21）；不记得有哪些别名时，不传参数调用 ssh_run 就会返回清单",
      );
    }
 
@@ -269,7 +269,7 @@ function passwordFromEnv(alias: string): string | undefined {
   };
 }
 
-/** 给 ssh_hosts 用：本地能解析到的全部主机名 */
+/** 给 ssh_run 的自省模式用：本地能解析到的全部主机名 */
 export function listHosts(): {
   ssh_config_path: string;
   local_config_path: string;

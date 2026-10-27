@@ -176,7 +176,7 @@ export async function sftpWrite(s: SFTPWrapper, remotePath: string, content: str
   const p = await resolveRemotePath(s, remotePath);
   const buf = Buffer.from(content, "utf8");
   if (buf.length > MAX_TEXT_BYTES) {
-    throw new Error(`内容 ${buf.length} 字节，超过 sftp_write 上限 ${MAX_TEXT_BYTES} 字节；请改用 sftp_upload`);
+    throw new Error(`内容 ${buf.length} 字节，超过文本写入上限 ${MAX_TEXT_BYTES} 字节；请改用 ssh_file 的 put`);
   }
   return new Promise((resolve, reject) => {
     const done = (chmodErr?: Error | null) => {
@@ -296,7 +296,7 @@ export async function sftpGet(s: SFTPWrapper, remotePath: string, localPath: str
   return new Promise((resolve, reject) => {
     s.stat(remote, (err, st) => {
       if (err) return reject(Object.assign(err, { path: remote }));
-      if (st.isDirectory()) return reject(new Error(`远端是目录，不能用 sftp_download：${remote}`));
+      if (st.isDirectory()) return reject(new Error(`远端是目录，不能用 ssh_file 的 get：${remote}`));
       if (st.size > MAX_TRANSFER_BYTES) return reject(new Error(`远端文件 ${st.size} 字节，超过传输上限 ${MAX_TRANSFER_BYTES} 字节`));
       fs.mkdirSync(path.dirname(local), { recursive: true });
       s.fastGet(remote, local, (getErr) => {

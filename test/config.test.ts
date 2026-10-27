@@ -83,7 +83,7 @@ describe("别名与直连地址解析", () => {
     expect(caught).toBeInstanceOf(ResolveError);
     const err = caught as ResolveError;
     expect(err.available.sort()).toEqual(["lan", "los"]);
-    expect(err.hint).toContain("ssh_hosts");
+    expect(err.hint).toContain("ssh_run");
   });
 
   test("user@host / host:port / [ipv6]:port 都能解析", () => {

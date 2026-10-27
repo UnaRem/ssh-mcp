@@ -244,9 +244,9 @@ describe("sftp_read / sftp_write", () => {
     expect(nodes.get(`${HOME}/x.sh`)!.mode).toBe(0o755);
   });
 
-  test("超过 sftp_write 上限时直接拒绝并说明上限", async () => {
+  test("超过文本写入上限时直接拒绝并说明上限", async () => {
     const big = "x".repeat(MAX_TEXT_BYTES + 1);
-    await expect(sftpWrite(sftp, `${HOME}/big.txt`, big)).rejects.toThrow(new RegExp(`超过 sftp_write 上限 ${MAX_TEXT_BYTES} 字节`));
+    await expect(sftpWrite(sftp, `${HOME}/big.txt`, big)).rejects.toThrow(new RegExp(`超过文本写入上限 ${MAX_TEXT_BYTES} 字节`));
   });
 });
 

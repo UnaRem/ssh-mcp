@@ -1,5 +1,5 @@
 /**
- * 一次性执行（ssh_exec / ssh_batch）。
+ * 一次性执行（ssh_run 不带 session 的那条路径）。
  * 复用 session.ts 的哨兵 shell：这样一次性调用与连续会话返回的是同一种可判定结构
  * （退出码、stdout/stderr 分开、是否超时、是否截断、cwd）。
  * 「快」来自单次调用内完成多步：新连接实测约 1.8s，一个 batch 只付一次连接成本。

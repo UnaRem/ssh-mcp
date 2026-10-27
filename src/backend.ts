@@ -179,7 +179,7 @@ export function describeConnectError(
     return { reason: `连接被拒绝（${target.hostname}:${target.port} 未在监听）`, hint: "确认 sshd 状态与端口", attempted_methods };
   }
   if (/ENOTFOUND|EAI_AGAIN/.test(msg)) {
-    return { reason: `域名解析失败：${target.hostname}`, hint: "检查别名是否拼错，用 ssh_hosts 查看可用别名", attempted_methods };
+    return { reason: `域名解析失败：${target.hostname}`, hint: "检查别名是否拼错；不传参数调用 ssh_run 可查看可用别名", attempted_methods };
   }
   return { reason: msg, attempted_methods };
 }
