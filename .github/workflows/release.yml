@@ -1,0 +1,64 @@
+# 打 tag（v*）就发一个 windows-x64 的单文件产物到 GitHub Release。
+# 只做当前需要的一个平台：产物只给 Windows 上的 MCP 客户端用（判据见 AGENTS.md 的「交付入口」）。
+# 关键约束：
+#   1) 编译后必须跑产物自检（--offline），构建期不报错不代表运行期没问题；
+#   2) 版本号只来自 package.json，tag 与它不一致就不发；
+#   3) exe 约 96 MiB，逼近单资产 100 MiB 上限，所以一律 zip（压缩后约 37 MiB）。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    name: 构建并自检 windows-x64 产物
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14 # 与本机实测版本一致（AGENTS.md「版本与硬约束」）
+
+      - name: 安装依赖（bun.lock 已入库，解析可重复）
+        run: bun install --frozen-lockfile
+
+      - name: tag 与 package.json 的版本必须一致
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json | ConvertFrom-Json).version
+          if ("v$ver" -ne "${{ github.ref_name }}") {
+            Write-Error "tag=${{ github.ref_name }} 与 package.json version=$ver 不一致：先改版本号再打 tag"
+            exit 1
+          }
+          Write-Output "版本一致：v$ver"
+
+      - name: 类型检查与离线测试
+        run: |
+          bun run lint
+          bun test
+
+      - name: 编译单文件产物
+        run: bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/ssh-mcp.exe
+
+      - name: 产物自检（离线档：CI 没有内网验收主机）
+        run: bun run dist-verify dist/ssh-mcp.exe --offline
+
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json | ConvertFrom-Json).version
+          Compress-Archive -Path dist/ssh-mcp.exe -DestinationPath "dist/ssh-mcp-$ver-windows-x64.zip" -Force
+          Get-ChildItem dist/*.zip | ForEach-Object { Write-Output ("{0}  {1:N1} MiB" -f $_.Name, ($_.Length / 1MB)) }
+
+      - name: 附到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ssh-mcp-*-windows-x64.zip
+          generate_release_notes: true

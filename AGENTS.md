@@ -27,15 +27,17 @@ src/
 docs/domain.md   领域模型：判据（桥只补 shell 给不了的）、统一语言、不变量、错误码语义
 test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约
 scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.local.json
-scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来的 exe 走真实 stdio 握手 + tools/call
+scripts/dist-verify.ts  单文件产物的验收（11 项；--offline 只跑协议层 5 项，给 CI 用）
+.github/workflows/release.yml  打 tag → 编译 windows-x64 产物 → 离线自检 → zip 附到 Release
+LICENSE          MIT
 .pi/goal/        目标契约；.pi/work/ 是临时探针，不入版本管理
 ```
 
 工具层（`src/tools/*`）不得 import 连接池/会话登记等实现细节，只经 `BridgeCtx` 取用——
 「对外只有一层桥」要靠这条边界检查，而不是靠约定。
 
-不入版本管理（见 `.gitignore`）：`config.local.json`、`.env*`、`*.log`、`.pi/work/`、`node_modules/`、`bun.lock`、`.known_hosts.append.log`。
-含明文密码的只有 `config.local.json`，必须保持被忽略。
+不入版本管理（见 `.gitignore`）：`config.local.json`、`.env*`、`*.log`、`.pi/work/`、`node_modules/`、`.known_hosts.append.log`。
+含明文密码的只有 `config.local.json`，必须保持被忽略。`bun.lock` 相反，**要入库**：CI 靠它重复解析出同一套依赖。
 
 ## 开发与验证命令
 
@@ -49,6 +51,7 @@ scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来�
 | `bun run live` | `bun run scripts/live-verify.ts` | 对真实主机跑端到端验收 |
 | `bun run build` | `bun build --compile src/index.ts --outfile dist/ssh-mcp.exe` | 单文件产物（`dist/` 不入库） |
 | `bun run dist-verify` | `bun run scripts/dist-verify.ts` | 对产物跑 11 项验收，默认 `~/tools/ssh-mcp.exe`，可传路径 |
+| `bun run dist-verify dist/ssh-mcp.exe --offline` | 同上，只跑协议层 5 项 | CI 用（没有内网验收主机），远端相关项记 SKIP |
 
 - 单跑某个文件：`bun test test/session.test.ts`。测试里 `beforeAll/afterAll` 是 Bun 的写法，**没有** `before/after`。
 - 改会话/哨兵/预检逻辑：`test/session.test.ts`、`test/exec.test.ts`；改连接与 host key：`test/backend.test.ts`、`test/knownhosts.test.ts`；
@@ -73,14 +76,22 @@ scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来�
 验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
 不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 11 项，重点看 `--compile` 后依赖是否真的带着走）。
 
+**自动发布（只 windows-x64）**：改完版本号 → 提交 → `git tag v<version> && git push origin v<version>` →
+`.github/workflows/release.yml` 跑：装依赖（靠 `bun.lock`）→ tag 与 `package.json` 版本必须一致（不一致直接失败）→
+lint + 离线测试 → `--target=bun-windows-x64` 编译 → `dist-verify --offline` 自检 → zip 附到 Release。
+产物 exe 约 96 MiB，逼近 GitHub 单资产 100 MiB 上限，**一律 zip**（压缩后约 37 MiB）。
+不发布其它平台：要加就新增一个 job，并且先在 CI 里跑通该 target 的产物自检（`cpu-features` 能否带着走是未测项）。
+
 ## 版本与硬约束（实测 2026-10-26）
 
 - 运行时：bun 1.3.14（node v24.15 也能跑 `bun:test` 语法之外的东西，但测试只用 bun）。目标远端只支持 **Linux**。
 - 依赖固定：`@modelcontextprotocol/sdk@1.32.x`、`ssh2@1.17.0`、`ssh-config@5.3.0`、`zod@4.x`。
   `ssh2` 的 `cpu-features` 需要编译（装包约 30s），加载失败会退回 JS crypto——不影响正确性但会变慢。
-- 单文件产物（实测 2026-10-27）：`bun build --compile` 直接可用，产物 96.2 MiB（含 bun 运行时），只跑当前平台；
+- 单文件产物（实测 2026-10-27）：`bun build --compile` 与 `--target=bun-windows-x64` 都可用，产物 96.2 MiB（含 bun 运行时）；
   `cpu-features` 没被拆掉——产物建连 589–615ms 对源码版 527–589ms，同一量级（真退回 JS crypto 会明显变慢）。
-  跨平台产物（`--target=bun-linux-x64`）未测。
+  除 windows-x64 外的 target 未测（`bun-linux-x64` 等要先在 CI 里跑通产物自检再谈发布）。
+- 版本号只有一个来源：`package.json` 的 `version`（`src/tool.ts` 读它，契约测试断言 `serverInfo.version` 与之一致，
+  CI 断言 tag 与之一致）。不要在代码里另写版本号。
 - 验收主机：`unarem@192.168.1.21`（OpenSSH 9.6p1 Ubuntu，Linux 6.8.0-147-generic），密码认证；有 `sha256sum` 与 sftp 子系统。
   `~/.ssh/config` 里的 `los` 密钥被服务器拒绝，是「认证失败要快速可读」的反例，不作正向用例。
 - 连接成本：新建 SSH 连接实测 ~1.8s（到 los，TCP+KEX+认证失败）；复用同一条连接的一条命令实测 5–60ms。
@@ -140,6 +151,8 @@ scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来�
 - `--compile` 构建期不报错不代表运行期没问题：产物必须过 `scripts/dist-verify.ts`。
   观察到一次（2026-10-27）产物刚复制到新位置后第一次运行有 5 项以 transport 关闭的形式失败，之后三次 11/11；
   原因未查（怀疑新落地的 exe 被首次扫描拦截），别把它当成契约回归。
+- 覆盖正在运行的产物会失败（2026-10-27 实测 `cp: ... Device or resource busy`）：MCP 客户端持着 `~/tools/ssh-mcp.exe` 时
+  Windows 不让覆盖。更新顺序固定为「退出客户端 → `bun run build` → 覆盖 → 起客户端」；开发期想避免，就把客户端指向源码。
 
 ## 环境事实的维护
 

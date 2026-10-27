@@ -53,6 +53,10 @@ bun run dist-verify                             # 对 ~/tools/ssh-mcp.exe 跑 11
   不显式给就退回「进程 cwd 下的 config.local.json」，而客户端的 cwd 不可靠。
 - 更新流程：改完 `src/**` → `bun run build` → 覆盖安装位置的 exe → `bun run dist-verify`。
   exe 不入版本管理（`dist/` 已忽略），可判定的来源始终是源码。
+  **覆盖前先退出 MCP 客户端**：客户端正持着这个 exe 时 Windows 不让写（实测 `cp: … Device or resource busy`）。
+- 也可以直接用发布产物：GitHub Release 按 tag 提供 `ssh-mcp-<版本>-windows-x64.zip`（解压即 `ssh-mcp.exe`）。
+  发布是 tag 驱动的：只改 `package.json` 的 `version` → 打 `v<版本>` 并推送 → CI 编译、离线自检、挂 zip；
+  tag 与 `package.json` 不一致会被 CI 挡下（版本号只写在 `package.json` 一处）。
 - 实测（2026-10-27）：`--compile` 后行为与源码版一致——11 项验收连续三次 11/11，
   建连 589–615ms（源码版 527–589ms，同一量级；`cpu-features` 若加载失败会退回 JS crypto 而明显变慢，未见退化）。
   另记一次观察：产物刚 `cp` 落地后的第一次运行有 5 项以 transport 关闭的形式失败，随后三次全通过，未复现。
@@ -289,6 +293,7 @@ LIVE_HOST=lan bun run live
 bun run build                # 单文件产物 dist/ssh-mcp.exe（见 1.1）
 bun run dist-verify          # 对产物跑 11 项验收，默认验 ~/tools/ssh-mcp.exe；可传路径验 dist/
 bun run dist-verify dist/ssh-mcp.exe
+bun run dist-verify dist/ssh-mcp.exe --offline   # 只跑协议层 5 项（CI 里没有验收主机，远端相关项记 SKIP）
 ```
 
 `live-verify` 会复制一份 `~/.ssh/known_hosts` 到临时目录来跑 TOFU/不匹配用例，不动真实文件，跑完清理远端临时目录。
@@ -303,5 +308,6 @@ bun run dist-verify dist/ssh-mcp.exe
 - 不做后台任务/job 家族（异步任务表、轮询取结果）：与「不留常驻进程」冲突，已取消。
 - 不把 SFTP 的 list/stat/read/write/mkdir 做成工具：远端 `ls`/`stat`/`sed`/`cat`/`mkdir -p` 更贴近模型既有能力。
 - 不做 npm 发布 / Docker / Web UI / 遥测。对外分发只走 `bun build --compile` 的单文件产物（见 1.1），
-  不引入包管理分发链路。
+  不引入包管理分发链路；产物由 tag 驱动的 GitHub Actions 挂到 Release，目前只发 windows-x64（要加平台就再加一个 job，
+  前提是先在该平台的 CI 里跑通产物自检）。
 - 不读写 `~/.ssh/config`，不改写私钥；对 `known_hosts` 仅追加。
