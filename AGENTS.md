@@ -100,6 +100,8 @@ scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来�
 - OpenSSH 的 known_hosts 语义：裸 host 条目对所有端口生效，`[host]:port` 才限定端口。
 - OpenSSH SFTP 起始目录是用户家目录，所以 `~` 用 `realpath(".")` 展开；`mkdir` 对已存在目录返回笼统的 `SFTP code 4`，
   要 `stat` 一下才知道是「已存在」。
+- `ssh_file` 的 `exists` 判的是**目标**侧且**先于**源检查（put 看远端、get 看本地）：同一个 `local_path` 第二次 `get`
+  得到 `exists` 而不是 `not_found`（实测 2026-10-27）。这是「不静默覆盖」优先于「报哪边缺失」的取舍，改动时会掩盖另一类错误。
 - 连接池按 `user@host:port` 复用，与本地 profile 无关；要验证「密钥优先」或 TOFU 重新校验，必须新建 server 进程或把
   `SSH_MCP_CONN_TTL_MS` 调小。
 - 工具检索普遍按 ASCII 词法匹配（分词丢弃中文）：纯中文 description 等于没有，模型找不到工具
@@ -113,15 +115,20 @@ scripts/dist-verify.ts  单文件产物的验收（11 项）：对编译出来�
 - 工具改名会改变检索得分（2026-10-26 实测：`sftp_put`→`sftp_upload` 让 upload 类查询 185→281）。
   反例是去掉协议前缀改用泛化名（`run`/`read`/`list`）：会与同一环境里其它工具互抢。
   检索按 token 去重计分，所以名字里重复的段不加分也不减分，重叠只是观感问题。
-- 改了 description 或客户端侧的关键词，当前会话的工具目录通常不刷新：按所用客户端的重发现方式处理
-  （有的要完整重启进程，有的改配置即热重载）。各客户端的具体接入配置写在 README 第 2 节——
-  那是使用侧的配置，不是本项目的约束，改客户端配置不动本仓库的代码与测试。
+- 客户端的工具目录跟着**它自己那条连接**走，不跟着配置走。OpenCode 是每个目录一条 MCP 连接：
+  改配置只重建部分目录的连接，已建立的那条连名字带行为都停在旧版本（2026-10-27 实测：旧连接还在回答重构前的 14 个工具，
+  返回体没有新版的 `mode`/`hint`）。要刷新就重建该目录的实例，或 `opencode service restart`
+  （连接活在常驻的 `serve --service` 进程里，只关 TUI 客户端无效；`opencode mcp` 没有 reload 子命令）。
+  自检：`ssh_run({})` 的返回里带 `mode:"inventory"` 与 `hint` 才是新工具面。
+  各客户端的具体接入配置写在 README 第 2 节——那是使用侧的配置，不是本项目的约束，改客户端配置不动本仓库的代码与测试。
 - `mcp.registerTool` 从对象上取下来再调用必须 `.bind(mcp)`，否则 `this._registeredTools` 是 undefined，
   server 启动即退出（实测报错 `TypeError: undefined is not an object (evaluating 'this._registeredTools')`）。
 - MCP SDK 在调用 handler **之前**就用 inputSchema 解析参数并剥掉未知键，所以自己在 handler 里查「多余参数」永远查不到。
   要参数严格就写 `z.object(shape).strict()`：发布的 JSON Schema 会带 `additionalProperties:false`，模型能自己看见边界。
   代价：这条失败由 SDK 抛出，返回只有文本、**没有 structuredContent**，也没有 `error_code`——契约测试因此断言的是
   「文本里点出写错的键名」，别断言 structuredContent。
+  另：OpenCode 客户端在发送前也校验一遍——**多余的键被静默剥掉**（缺字段才报错），所以从 agent 侧看不到拒绝（实测 2026-10-27）。
+  这不改变「服务端必须自己 strict」的结论：协议层的拒绝才是可观察的。
 - `ssh_run` 的 `host`/`command` 必须是 `.optional()`：自省模式（什么都不传）要在 schema 层通过，
   否则 SDK 直接报 `expected string, received undefined at host`，根本进不到 handler（实测 2026-10-27）。
   「该传什么」由 handler 判定并给可操作说明。

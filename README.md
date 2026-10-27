@@ -88,10 +88,21 @@ bun run dist-verify                             # 对 ~/tools/ssh-mcp.exe 跑 11
 （本机登记为 `ssh-tool` → `tools["ssh-tool"].ssh_run`），**不读**服务端的身份名，改键即时热重载、不用重启。
 两边的命名来源不同：PI-Desktop 的前缀改 `src/index.ts` 的 `name`，OpenCode 只改它的键。
 
-实测（2026-10-27）：OpenCode 改配置会重启该 MCP server（`opencode mcp list` 显示 connected），
-但**当前进程的工具目录不会重建**——同一进程里新开的会话/子会话仍看到旧工具名。
-服务端换了工具面（如 14 个工具改成 2 个）之后，要完整退出并重启 OpenCode，agent 侧才会出现新名字。
-在那之前只能用协议层验收（`bun run live` 走的就是真实 stdio 握手与 `tools/call`）。
+实测（2026-10-27，OpenCode v2.1.4）：**MCP 连接是按目录建立的**——每个打开过的目录各有一条自己的连接。
+改配置只重建其中一部分目录的连接；已经建立的那条不会重连，它的工具目录就停在旧版本——
+注意是名字和行为都旧（实测旧连接仍在回答重构前的 14 个工具，返回体没有新版的 `mode`/`hint` 字段）。
+
+刷新要靠「该目录的实例被重建」，日志里出现 `mcp connected server=ssh-tool tools=2 directory=…` 就是成功标志。
+可用的做法，按可靠性排：
+
+1. `opencode service restart`（或 `service stop` + `start`）——重启常驻服务进程，所有目录都重来。
+   连接活在 `opencode … serve --service` 那个常驻进程里，**只关 TUI 客户端无效**（实测：重开 TUI 后仍是旧工具面）。
+2. 把会话移到别的目录再移回来（`session_move`），触发该目录实例重建，几秒完成。
+3. `opencode --standalone` 起一个私有服务，MCP 全新连接，不动常驻服务，适合临时验证。
+
+`opencode mcp` 只有 `list / add / auth / logout`，**没有 reload 子命令**。
+自检：调 `ssh_run` 传 `{}`，返回里带 `mode:"inventory"` 和 `hint` 才是新工具面。
+协议层的验收不受这些影响——`bun run live` / `bun run dist-verify` 走的就是真实 stdio 握手与 `tools/call`。
 
 启动后 `tools/list` 只返回两个工具：`ssh_run`、`ssh_file`。
 这是刻意的窄面（判据见 `docs/domain.md`）；`ssh_run` 不传任何参数就是自省模式，
@@ -134,6 +145,22 @@ adapter 日志会写 `direct tools frozen after initial sync — reconnects won'
 本项目只保证服务端这一侧：description 带 ASCII `Keywords:`、`instructions` 说明何时用哪个工具。
 另外，adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，
 PI-Desktop 的直接注册路径不受它影响（推断，未实测）——要缩短名字只能改服务端 `name` 或工具名。
+
+### 2.2 客户端会先校验参数（实测 2026-10-27，OpenCode）
+
+OpenCode 在把参数发出去之前，先用发布出去的 JSON Schema 校验一遍，两种情形行为不同：
+
+- **缺字段**：直接报错，调用进不到服务端（例：`entries[0].local_path` 缺失 → `Invalid arguments … Missing key`）。
+- **多余的键**：**静默剥掉**，不报错（例：多传 `user`/`port` 也照样执行，服务端收不到它们）。
+
+由此两条要记住：
+
+1. 严格的边界必须在服务端做（`z.object(...).strict()`，发布的 schema 带 `additionalProperties:false`）。
+   协议层会拒绝并点出写错的键名（`Unrecognized keys: "user"`）——这条由 SDK 抛出，没有 `structuredContent`
+   也没有 `error_code`，所以 `test/contract.test.ts` 断言的是文本里的键名，别断言 structuredContent。
+2. 「服务端返回 `bad_input`」与「客户端先拦下」是两条路径：写错的 `entries[].op` 只有在同时给了 `local_path`
+   时才会走到服务端的 `bad_input + allowed_ops`；漏了 `local_path` 就被客户端拦在外面。
+   模型能从 schema 自己看见这个边界（两个路径字段都必填），因此不算缺陷，只是排查时要分清错误来自哪一层。
 
 ## 3. 主机与认证
 
@@ -226,7 +253,7 @@ PI-Desktop 的直接注册路径不受它影响（推断，未实测）——要
 | `unknown_host` | 别名解析不出来 | `available_hosts`、`ssh_config_path`、`local_config_path` |
 | `connect_failed` / `auth_failed` / `host_key_mismatch` | 握手/凭据/host key | `hint`、`attempted_methods`、`host_key_fingerprint` |
 | `no_session` | 会话不存在或已被 TTL 回收 | `active_sessions`、空闲时长与 TTL |
-| `not_found` / `permission` / `exists` | 传输条目的文件系统情形（**按数据返回，调用本身不是错误**） | 条目 `index`、路径 |
+| `not_found` / `permission` / `exists` | 传输条目的文件系统情形（**按数据返回，调用本身不是错误**）。`exists` 判的是**目标**侧：put 看远端、get 看本地，目标已存在就先报 `exists`，不会再去看源——所以同一个 `local_path` 第二次 `get` 得到的是 `exists` 而不是 `not_found`（实测 2026-10-27） | 条目 `index`、路径 |
 | `internal` | 其它未归类 | `error`、`cause` |
 
 其他保证：
