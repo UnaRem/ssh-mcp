@@ -131,15 +131,6 @@ function connMeta(a: Acquired) {
   };
 }
 
-/** 出错的调用不留可疑连接：解析主机后把可能的池项摘掉 */
-function dropHost(host: string): void {
-  try {
-    dropEntry(poolKey(resolveTarget({ host })));
-  } catch {
-    /* 主机解析不了，本来也没有池项 */
-  }
-}
-
 /** 自省：不传参数就能拿到主机清单、配置来源与活动状态。这是把 ssh_hosts 省掉的那次调用。 */
 function inventory(): Record<string, unknown> {
   const hosts = listHosts();
@@ -167,7 +158,6 @@ const ctx: BridgeCtx = {
   hostKeyOf: poolKey,
   openSftp: (conn) => sftlops.openSftp(conn.conn),
   sessions,
-  dropHost,
   inventory,
 };
 
@@ -207,7 +197,9 @@ function register(mcp: McpServer, bridge: BridgeCtx, def: ToolDef): void {
       try {
         return ok(await def.handler(bridge, args));
       } catch (e) {
-        if (typeof args.host === "string") bridge.dropHost(args.host);
+        // 不在这里动连接池：参数/会话类错误与连接无关，误摘会把同一主机上的会话一起杀掉（实测：
+        // 一次 op 写错的 ssh_file 调用让 keep 会话消失了）。连接真的断了，ssh2 的 close/error 事件
+        // 会把池项摘掉；空闲过 TTL 的连接在下次取用时判定丢弃。
         return fromError(e, def.name);
       }
     },

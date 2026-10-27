@@ -33,7 +33,9 @@ export function parseArgs<T>(schema: z.ZodType<T>, args: unknown): T {
 export type ToolPayload = Record<string, unknown>;
 
 export function ok(payload: ToolPayload) {
-  const body = { ...payload, ok: true };
+  // 默认 ok:true，但工具自己给出的 ok 优先：命令 exit_code != 0、传输有条目失败时
+  // 顶层必须是 false（那是数据，同时也不该被包装器抹平成成功）。
+  const body = { ok: true, ...payload };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }],
     structuredContent: body,
@@ -41,8 +43,7 @@ export function ok(payload: ToolPayload) {
 }
 
 export function err(payload: ToolPayload) {
-  const body = { ...payload, ok: false };
-  return {
+  const body = { ...payload, ok: false };  return {
     content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }],
     structuredContent: body,
     isError: true,

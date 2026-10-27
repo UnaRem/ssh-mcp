@@ -34,8 +34,6 @@ export interface BridgeCtx {
   hostKeyOf(target: ResolvedTarget): string;
   openSftp(conn: ConnHandle): Promise<SFTPWrapper>;
   sessions: SessionManager;
-  /** 出错的调用不留可疑连接 */
-  dropHost(host: string): void;
   /** 自省：可用主机、配置来源、活动连接与会话。不传参数就能拿到，省一次「先问有哪些主机」的调用 */
   inventory(): Record<string, unknown>;
 }
