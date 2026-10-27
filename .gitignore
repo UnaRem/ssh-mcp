@@ -1,7 +1,7 @@
 # 依赖与缓存
 node_modules/
-bun.lock
 *.log
+# bun.lock 故意入库：CI（GitHub Release）要能重复解析出同一套依赖
 
 # 含密码/密钥的本地配置：永不入库（验收要求 git log 不含明文密码）
 config.local.json

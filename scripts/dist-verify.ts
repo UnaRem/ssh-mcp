@@ -1,8 +1,9 @@
 /**
  * scripts/dist-verify.ts —— 单文件二进制产物的端到端验收
  *
- * 跑法：bun run dist-verify                        默认验 ~/tools/ssh-mcp.exe
+ * 跑法：bun run dist-verify                        默认验 ~/tools/ssh-mcp.exe（完整，连远端）
  *       bun run dist-verify dist/ssh-mcp.exe       验刚构建出来的产物
+ *       bun run dist-verify --offline              只跑协议层 5 项（CI 用：没有内网验收主机）
  *       SSH_MCP_DIST=<abs> bun run dist-verify
  *
  * 为什么单独一个脚本：`bun build --compile` 把依赖（含 ssh2 的原生模块）打进单文件，
@@ -22,14 +23,18 @@ import * as path from "node:path";
 
 const PROJECT_DIR = path.join(import.meta.dir, "..");
 const HOST = process.env.LIVE_HOST ?? "lan";
+// 参数：<产物路径>（可选） --offline（只跑协议层，不连远端；给 CI 用）
+const argv = process.argv.slice(2);
+const OFFLINE = argv.includes("--offline");
 const EXE =
-  process.argv[2] ??
+  argv.find((a) => !a.startsWith("--")) ??
   process.env.SSH_MCP_DIST ??
   path.join(os.homedir(), "tools", process.platform === "win32" ? "ssh-mcp.exe" : "ssh-mcp");
+const PKG_VERSION: string = JSON.parse(fs.readFileSync(path.join(PROJECT_DIR, "package.json"), "utf8")).version;
 const LOCAL_FILE = path.join(PROJECT_DIR, "package.json"); // 拿来当上传样本，内容稳定
 const REMOTE_FILE = "/tmp/dist-verify.txt";
 
-type Row = { name: string; ok: boolean; ms: number; note?: string };
+type Row = { name: string; ok: boolean; ms: number; note?: string; skip?: boolean };
 const rows: Row[] = [];
 async function check(name: string, fn: () => Promise<string | void> | string | void) {
   const t0 = Date.now();
@@ -39,6 +44,18 @@ async function check(name: string, fn: () => Promise<string | void> | string | v
   } catch (e) {
     rows.push({ name, ok: false, ms: Date.now() - t0, note: "FAIL: " + (e as Error).message });
   }
+}
+
+/**
+ * 需要连远端的检查。CI 里没有内网验收主机，`--offline` 时记为 SKIP（不算失败也不算通过）。
+ * 离线那五项（握手、身份与版本、工具面、自省、多余参数被拒）已经覆盖「依赖是否真的被打进产物」这一层。
+ */
+async function checkRemote(name: string, fn: () => Promise<string | void> | string | void) {
+  if (OFFLINE) {
+    rows.push({ name, ok: true, ms: 0, skip: true, note: "SKIP（--offline，不连远端）" });
+    return;
+  }
+  await check(name, fn);
 }
 
 async function startServer() {
@@ -75,7 +92,7 @@ async function call2(client: Client, name: string, args: Record<string, unknown>
 async function main() {
   assert.ok(fs.existsSync(EXE), `找不到产物：${EXE}（先 bun run build，或把路径传进来）`);
   const sizeMiB = (fs.statSync(EXE).size / 1024 / 1024).toFixed(1);
-  console.log(`验收产物：${EXE}（${sizeMiB} MiB）`);
+  console.log(`验收产物：${EXE}（${sizeMiB} MiB）模式：${OFFLINE ? "离线（只跑协议层）" : "完整（连远端 " + HOST + "）"}`);
 
   const t0 = Date.now();
   const srv = await startServer();
@@ -89,8 +106,8 @@ async function main() {
     await check("身份名与 version 未被构建改写", () => {
       const v = srv.client.getServerVersion()!;
       assert.equal(v.name, "ssh");
-      assert.match(v.version, /^\d+\.\d+\.\d+$/);
-      return `name=${v.name} version=${v.version}`;
+      assert.equal(v.version, PKG_VERSION, `version 与 package.json(${PKG_VERSION}) 不一致：版本号只能有一个来源`);
+      return `name=${v.name} version=${v.version}（与 package.json 一致）`;
     });
 
     await check("tools/list 恰好 ssh_run / ssh_file", async () => {
@@ -105,12 +122,19 @@ async function main() {
     await check("自省模式返回主机清单", async () => {
       const p = await call2(srv.client, "ssh_run", {});
       assert.equal(p.mode, "inventory");
-      assert.ok((p.hosts ?? []).length >= 1, "主机清单为空");
-      assert.equal(p.local_config_exists, true, "config.local.json 没读到（产物不依赖 cwd）");
-      return `hosts=${p.hosts.map((h: any) => h.name).join(",")} config=${p.local_config_path}`;
+      const haveCfg = fs.existsSync(path.join(PROJECT_DIR, "config.local.json"));
+      if (haveCfg) {
+        assert.ok((p.hosts ?? []).length >= 1, "有 config.local.json 却没返回主机");
+        assert.equal(p.local_config_exists, true, "config.local.json 没读到（产物不依赖 cwd）");
+        return `hosts=${p.hosts.map((h: any) => h.name).join(",")} config=${p.local_config_path}`;
+      }
+      // CI 里没有本地 profile：应当如实报告读不到，并把来源说清（这不是失败）
+      assert.ok(Array.isArray(p.hosts), "hosts 应当是数组");
+      assert.equal(p.local_config_exists, false);
+      return `无本地 profile：local_config_exists=false，从 ${p.ssh_config_path} 读到 ${p.hosts.length} 个别名`;
     });
 
-    await check("真实执行：新建连接并返回内核", async () => {
+    await checkRemote("真实执行：新建连接并返回内核", async () => {
       const t = Date.now();
       const p = await call2(srv.client, "ssh_run", { host: HOST, command: "uname -sr" });
       assert.equal(p.exit_code, 0);
@@ -120,13 +144,13 @@ async function main() {
       return `建连+执行 ${Date.now() - t}ms，服务端内部 ${p.duration_ms}ms，auth=${p.auth_succeeded_with}`;
     });
 
-    await check("连接池在产物里生效（第二次调用不建新连）", async () => {
+    await checkRemote("连接池在产物里生效（第二次调用不建新连）", async () => {
       const p = await call2(srv.client, "ssh_run", { host: HOST, command: "true" });
       assert.equal(p.connection, "reused");
       return `connection=reused ${p.duration_ms}ms`;
     });
 
-    await check("命令失败仍是数据不是工具错误", async () => {
+    await checkRemote("命令失败仍是数据不是工具错误", async () => {
       const c = await call(srv.client, "ssh_run", { host: HOST, command: "sh -c 'exit 7'" });
       assert.equal(c.isError, false);
       assert.equal(c.p.ok, false);
@@ -134,7 +158,7 @@ async function main() {
       return "exit_code=7 顶层 ok=false";
     });
 
-    await check("连续会话：跨调用保持 cwd，close 干净", async () => {
+    await checkRemote("连续会话：跨调用保持 cwd，close 干净", async () => {
       const s1 = await call2(srv.client, "ssh_run", { host: HOST, session: "keep", command: "cd /tmp && pwd" });
       const s2 = await call2(srv.client, "ssh_run", { session: "keep", command: "pwd" });
       assert.equal(s2.session_id, s1.session_id);
@@ -144,7 +168,7 @@ async function main() {
       return `cwd=/tmp 已保持，closed=${JSON.stringify(c.closed)}`;
     });
 
-    await check("ssh_file put/get 与本地 sha256 一致", async () => {
+    await checkRemote("ssh_file put/get 与本地 sha256 一致", async () => {
       const tmpLocal = path.join(os.tmpdir(), `dist-verify-back-${process.pid}.json`);
       const r = await call2(srv.client, "ssh_file", {
         host: HOST,
@@ -170,7 +194,7 @@ async function main() {
       return c.text.slice(0, 90);
     });
 
-    await check("清理远端临时文件", async () => {
+    await checkRemote("清理远端临时文件", async () => {
       const p = await call2(srv.client, "ssh_run", { host: HOST, command: `rm -f ${REMOTE_FILE} && echo 已清理` });
       return String(p.stdout).trim();
     });
@@ -180,12 +204,16 @@ async function main() {
 
   console.log("\n==== 产物验收结果 ====");
   let failed = 0;
+  let skipped = 0;
   for (const r of rows) {
     if (!r.ok) failed++;
-    console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.name}  (${r.ms}ms)`);
+    if (r.skip) skipped++;
+    const tag = r.skip ? "SKIP" : r.ok ? "PASS" : "FAIL";
+    console.log(`${tag}  ${r.name}${r.skip ? "" : `  (${r.ms}ms)`}`);
     if (r.note) console.log(`      ${r.note}`);
   }
-  console.log(`\n合计 ${rows.length} 项，失败 ${failed} 项`);
+  const ran = rows.length - skipped;
+  console.log(`\n合计 ${ran} 项，失败 ${failed} 项${skipped ? `，跳过 ${skipped} 项（--offline）` : ""}`);
   process.exit(failed ? 1 : 0);
 }
 

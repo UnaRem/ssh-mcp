@@ -4,8 +4,10 @@
  * 只有连接/协议/参数错误才 isError=true —— 这样 agent 能对结果做判定而不是猜。
  */
 import { z } from "zod";
+import pkg from "../package.json" with { type: "json" };
 
-export const VERSION = "0.1.0";
+/** 版本号只有一个来源：package.json。tag/发布改一处，serverInfo 与启动横幅跟着走（契约测试断言一致）。 */
+export const VERSION: string = pkg.version;
 
 export const DEFAULT_READY_TIMEOUT_MS = 12_000;
 export const DEFAULT_EXEC_TIMEOUT_MS = 30_000;

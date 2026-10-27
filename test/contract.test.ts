@@ -11,11 +11,12 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PROJECT_DIR = join(import.meta.dir, "..");
+const PKG_VERSION: string = JSON.parse(readFileSync(join(PROJECT_DIR, "package.json"), "utf8")).version;
 
 /** 两个工具就是全部对外面。多一个即契约漂移。 */
 const REQUIRED_TOOLS = ["ssh_run", "ssh_file"];
@@ -120,6 +121,8 @@ describe("对外契约：只有两个工具", () => {
       }
       // server 身份名决定 PI-Desktop 的 mcp_ 前缀；带 -mcp_ 会与工具名的 ssh_ 段交错重复，模型实测写错
       expect(client.getServerVersion()?.name).toBe("ssh");
+      // 版本单一来源：只有 package.json 里有版本号。tag 驱动发布时不许两处漂移。
+      expect(client.getServerVersion()?.version).toBe(PKG_VERSION);
     });
     expect(meta.exited).toBe(true);
   });

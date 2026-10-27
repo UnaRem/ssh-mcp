@@ -1,5 +1,7 @@
 {
   "name": "ssh-mcp",
+  "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "SSH/SFTP MCP 工具：面向 agent 的快速、可判定的远端执行与传输",
