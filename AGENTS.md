@@ -67,9 +67,9 @@ LICENSE          MIT
 
 两种交付形态，源码始终是准的：
 
-1. **源码直跑**：客户端用绝对路径 `bun run <abs>/src/index.ts` 启动（README 第 2 节的配置片段）。
+1. **源码直跑**：客户端用绝对路径 `bun run <abs>/src/index.ts` 启动（README「接入 MCP 客户端」的配置片段）。
 2. **单文件产物**：`bun run build` → `dist/ssh-mcp.exe`（约 96 MiB，含 bun 运行时），装到 `~/tools/ssh-mcp.exe`，
-   客户端 `command` 直接指向它，对端不需要装 bun（README 1.1）。产物不入版本管理；
+   客户端 `command` 直接指向它，对端不需要装 bun（README「安装与运行」）。产物不入版本管理；
    更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（11 项，全 PASS 才算完）。
    配置一律靠 `SSH_MCP_CONFIG` 的绝对路径：产物里不含 `config.local.json`，靠 cwd 兜底在客户端不可靠。
 
@@ -133,7 +133,7 @@ LICENSE          MIT
   返回体没有新版的 `mode`/`hint`）。要刷新就重建该目录的实例，或 `opencode service restart`
   （连接活在常驻的 `serve --service` 进程里，只关 TUI 客户端无效；`opencode mcp` 没有 reload 子命令）。
   自检：`ssh_run({})` 的返回里带 `mode:"inventory"` 与 `hint` 才是新工具面。
-  各客户端的具体接入配置写在 README 第 2 节——那是使用侧的配置，不是本项目的约束，改客户端配置不动本仓库的代码与测试。
+  各客户端的具体接入配置写在 README「接入 MCP 客户端」一节——那是使用侧的配置，不是本项目的约束，改客户端配置不动本仓库的代码与测试。
 - `mcp.registerTool` 从对象上取下来再调用必须 `.bind(mcp)`，否则 `this._registeredTools` 是 undefined，
   server 启动即退出（实测报错 `TypeError: undefined is not an object (evaluating 'this._registeredTools')`）。
 - MCP SDK 在调用 handler **之前**就用 inputSchema 解析参数并剥掉未知键，所以自己在 handler 里查「多余参数」永远查不到。

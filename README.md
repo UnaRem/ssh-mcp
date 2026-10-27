@@ -1,187 +1,130 @@
-# ssh-mcp —— 给 agent 用的 SSH/SFTP 工具
+# ssh-mcp
 
-一个 stdio 上的 MCP server，让 agent 用**尽量少的调用**在 Linux 远端执行命令、传文件，
-并拿到**结构化、可判定**的结果：退出码、stdout/stderr 分离、是否超时、是否截断、当前 cwd。
+给 agent 用的 Linux 远端命令执行与文件传输工具：一个跑在 stdio 上的 MCP server。
 
-对外只有一层「SSH 桥」：**`ssh_run`（跑命令）+ `ssh_file`（搬文件）**。
-命令按原生 shell 写（`&&`、管道、`tail -n`、`sed -n`、heredoc、`mkdir -p`），
-桥只补 shell 给不了的东西（认证与 host key、连接复用、退出码分离、输出预算、跨调用的会话状态）。
-为什么这样切、哪些不变量不能破，见 `docs/domain.md`。
+对外只有一层「SSH 桥」，两个工具：
 
-技术栈：Bun + TypeScript + 官方 MCP SDK + [`ssh2`](https://github.com/mscdex/ssh2) 库后端。
-**不**调用系统 `ssh`/`scp`/`sftp` 子进程，**不**用 plink，**不**用 ControlMaster，
-除本 server 进程外**不启动任何常驻后台进程**（server 退出即无残留）。
+- **`ssh_run`** —— 在远端执行命令，拿结构化结果（退出码、stdout/stderr 分离、是否超时、是否截断、当前 cwd）；
+- **`ssh_file`** —— 本地与远端之间搬文件（put/get，可批量，单条失败按数据返回）。
 
----
+命令按原生 shell 写（`&&`、管道、`tail -n`、`sed -n`、heredoc、`mkdir -p`），桥只补 shell 给不了的东西：
+认证与 host key 校验、连接复用、退出码与输出流的分离、输出预算与真实总量、跨调用的会话状态。
+为什么这样切面、哪些不变量不能破，见 [`docs/domain.md`](docs/domain.md)；对外契约由 `test/contract.test.ts` 锁定。
 
-## 1. 安装
+技术栈：Bun + TypeScript + 官方 MCP SDK + [`ssh2`](https://github.com/mscdex/ssh2)。
+不调用系统 `ssh`/`scp`/`sftp`/`plink` 子进程，不用 ControlMaster，除本 server 进程外不启动任何常驻后台进程。
+
+## 特性
+
+- **可判定的结果**：`exit_code`/`stdout`/`stderr` 分开返回；命令失败（退出码非 0）是数据不是工具错误，agent 能对结果做判定而不是猜。
+- **窄工具面**：`tools/list` 恰好两个工具，参数只放 shell 给不了的东西；`ssh_run` 不传参数即自省——
+  返回可用主机清单与来源、配置路径、活动连接与会话，省掉「先看有哪些主机」的那次调用。
+- **快**：进程内连接池按 `user@host:port` 复用（新建连接 ~1.8s，复用后单条命令 5–60ms）；
+  多步用 `&&` 合并成一次往返；`ssh_file` 一次传多个条目共用一条 SFTP 连接。
+- **连续会话**：`session="keep"` 建立跨调用保持 cwd/环境的小 shell，按 TTL 自动回收，结束方式明确。
+- **认证自动**：密钥优先、密码兜底；host key TOFU/严格/关闭三档；失败原因可读（尝试过哪些方法、实际指纹）。
+
+## 安装与运行
+
+要求 [bun](https://bun.sh)（本项目实测 bun 1.3.14；远端目标只支持 Linux）。
 
 ```bash
-cd C:/Files/Codes/ssh_mcp
-bun install
+git clone https://github.com/UnaRem/ssh-mcp && cd ssh-mcp
+bun install          # ssh2 的 cpu-features 原生模块会编译（约 30s）
 ```
 
-依赖 `ssh2` 的 `cpu-features` 原生模块在装包时会编译（实测 2026-10-26 约 30s），加载成功后走原生 crypto。
+三种运行方式，功能与验收完全一致：
 
-### 1.1 单文件产物（推荐给其它机器/客户端用）
+| 方式 | 命令 | 适用 |
+| --- | --- | --- |
+| 源码直跑 | `bun run src/index.ts` | 开发期（改代码即生效） |
+| 本地构建产物 | `bun run build` → `dist/ssh-mcp.exe` | 对端不装 bun 也能用 |
+| 下载发布产物 | GitHub Release 的 `ssh-mcp-<版本>-windows-x64.zip`（解压即 `ssh-mcp.exe`） | 不想碰仓库 |
 
-不要求对方装 bun：把 server 编译成一个可执行文件，客户端的 `command` 直接指向它。
+本机的固定安装位是 `~/tools/ssh-mcp.exe`（`C:/Users/UnaRem/tools/`），与仓库位置解耦：
 
 ```bash
-cd C:/Files/Codes/ssh_mcp
-bun run build                                   # bun build --compile → dist/ssh-mcp.exe（约 96 MiB）
-cp dist/ssh-mcp.exe ~/tools/                    # 装到用户目录，路径与仓库位置解耦
-bun run dist-verify                             # 对 ~/tools/ssh-mcp.exe 跑 11 项端到端验收
+bun run build
+cp dist/ssh-mcp.exe ~/tools/
+bun run dist-verify                    # 对安装位跑 11 项端到端验收
 ```
 
-接入片段（把 `command` 换成 exe 的绝对路径，其余与第 2 节相同）：
+> 覆盖前先退出 MCP 客户端：客户端正持着这个 exe 时 Windows 不让写（`Device or resource busy`）。
+> 产物必须过 `dist-verify`：`--compile` 把依赖（含原生模块）打进单文件，构建期不报错不代表运行期没问题。
 
-```json
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "C:/Users/UnaRem/tools/ssh-mcp.exe",
-      "env": { "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json" }
-    }
-  }
-}
-```
+## 接入 MCP 客户端
 
-要点：
-
-- `SSH_MCP_CONFIG` 必须给绝对路径。产物里不含 `config.local.json`（含明文密码，永不入库），
-  不显式给就退回「进程 cwd 下的 config.local.json」，而客户端的 cwd 不可靠。
-- 更新流程：改完 `src/**` → `bun run build` → 覆盖安装位置的 exe → `bun run dist-verify`。
-  exe 不入版本管理（`dist/` 已忽略），可判定的来源始终是源码。
-  **覆盖前先退出 MCP 客户端**：客户端正持着这个 exe 时 Windows 不让写（实测 `cp: … Device or resource busy`）。
-- 也可以直接用发布产物：GitHub Release 按版本提供 `ssh-mcp-<版本>-windows-x64.zip`（解压即 `ssh-mcp.exe`）。
-  发布是 push 驱动的：把 `package.json` 的 `version` 改一行并 push 到 main → CI 编译、离线自检、
-  在该 commit 创建 `v<版本>` tag 并挂 zip，Release 说明就是这段 commit；版本号没改的 push 会被跳过。
-  版本号只写在 `package.json` 一处，tag 由 CI 创建，不需要手动 `git tag`。
-- 实测（2026-10-27）：`--compile` 后行为与源码版一致——11 项验收连续三次 11/11，
-  建连 589–615ms（源码版 527–589ms，同一量级；`cpu-features` 若加载失败会退回 JS crypto 而明显变慢，未见退化）。
-  另记一次观察：产物刚 `cp` 落地后的第一次运行有 5 项以 transport 关闭的形式失败，随后三次全通过，未复现。
-
-## 2. 接入 MCP 客户端
-
-用**绝对路径**启动，别用相对路径（客户端的工作目录不确定）：
+所有客户端的配置形状相同，`command` 指向源码（经 bun）或 exe 都可以。用绝对路径——客户端的工作目录不确定。
 
 ```json
 {
   "mcpServers": {
     "ssh": {
       "command": "bun",
-      "args": ["run", "C:/Files/Codes/ssh_mcp/src/index.ts"],
-      "env": {
-        "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json"
-      }
+      "args": ["run", "C:/absolute/path/to/ssh-mcp/src/index.ts"],
+      "env": { "SSH_MCP_CONFIG": "C:/absolute/path/to/ssh-mcp/config.local.json" }
     }
   }
 }
 ```
 
-本机 PI-Desktop 的 MCP 配置在 `~/.pi/agent/mcp.json`（同样的 `mcpServers` 形状），已按上面的片段登记为 `ssh`。
-工具名前缀由服务端自己决定：PI-Desktop 的可见工具名 = `mcp_` + server 身份名（`-`→`_`）+ `_` + 工具原名，
-身份名取 `src/index.ts` 里 `new McpServer({ name: "ssh" })`（实测 2026-10-26：改 mcp.json 的键不影响前缀）。
-旧的 `name: "ssh-mcp"` 会得到 `mcp_ssh_mcp_ssh_exec`，前缀与工具名交错重复，模型容易漏写或重复 `ssh_` 段而调用失败；
-现在是 `mcp_ssh_ssh_run` / `mcp_ssh_ssh_file`。**如果以前在 mcp.json 里登记过 `ssh-mcp`，请把那条旧条目删掉**，否则同一个 server 注册两份，工具目录翻倍。
-`command` 用 bun 的绝对路径（`C:/Users/UnaRem/.bun/bin/bun.exe`）以免受 GUI 进程 PATH 差异影响。**改完这个文件要完整退出并重启 PI-Desktop 进程才会重新发现工具，只重连 server 无效（原因见 2.1）。**
-不设 `SSH_MCP_CONFIG` 时 server 会退回 `<进程 cwd>/config.local.json`，所以显式写绝对路径更稳。
-也可以写 `bun start`（`package.json` 的 `start` 脚本就是 `bun run src/index.ts`），但 MCP 客户端里推荐上面的直接形式，少一层进程。
+- `command` 建议用 bun 的绝对路径（如 `C:/Users/<you>/.bun/bin/bun.exe`），免受 GUI 进程 PATH 差异影响。
+- `SSH_MCP_CONFIG` 必须是绝对路径：配置文件不在产物里（含明文密码，永不入库），
+  不显式给会退回「进程 cwd 下的 `config.local.json`」，而客户端的 cwd 不可靠。
 
-另一类客户端不这样命名：OpenCode 用它配置文件（`~/.config/opencode/opencode.json`）里的 mcp 键作命名空间
-（本机登记为 `ssh-tool` → `tools["ssh-tool"].ssh_run`），**不读**服务端的身份名，改键即时热重载、不用重启。
-两边的命名来源不同：PI-Desktop 的前缀改 `src/index.ts` 的 `name`，OpenCode 只改它的键。
+### 工具叫什么名字（两类客户端不同）
 
-实测（2026-10-27，OpenCode v2.1.4）：**MCP 连接是按目录建立的**——每个打开过的目录各有一条自己的连接。
-改配置只重建其中一部分目录的连接；已经建立的那条不会重连，它的工具目录就停在旧版本——
-注意是名字和行为都旧（实测旧连接仍在回答重构前的 14 个工具，返回体没有新版的 `mode`/`hint` 字段）。
+客户端可见的工具名 = 客户端侧命名空间 + 工具原名，命名空间的来源各客户端不同：
 
-刷新要靠「该目录的实例被重建」，日志里出现 `mcp connected server=ssh-tool tools=2 directory=…` 就是成功标志。
-可用的做法，按可靠性排：
+- **PI-Desktop**（配置在 `~/.pi/agent/mcp.json`）：前缀是 `mcp_` + 服务端身份名 + `_`，
+  身份名取 `src/index.ts` 的 `new McpServer({ name: "ssh" })`，改客户端配置的键不影响它。
+  本项目刻意把身份名取短且不与工具名的 `ssh_` 段交错重复（`ssh-mcp` 会得到 `mcp_ssh_mcp_ssh_run`，模型容易写错）。
+  **如果以前登记过旧身份（如 `ssh-mcp`），删掉那条旧条目**，否则同一个 server 注册两份、工具目录翻倍。
+- **OpenCode**（`~/.config/opencode/opencode.json`）：命名空间是它配置里的 mcp 键（本机登记为 `ssh-tool`），
+  不读服务端身份名；改键即时热重载。
 
-1. `opencode service restart`（或 `service stop` + `start`）——重启常驻服务进程，所有目录都重来。
-   连接活在 `opencode … serve --service` 那个常驻进程里，**只关 TUI 客户端无效**（实测：重开 TUI 后仍是旧工具面）。
-2. 把会话移到别的目录再移回来（`session_move`），触发该目录实例重建，几秒完成。
-3. `opencode --standalone` 起一个私有服务，MCP 全新连接，不动常驻服务，适合临时验证。
+### 改配置/换版本后，工具目录何时刷新
 
-`opencode mcp` 只有 `list / add / auth / logout`，**没有 reload 子命令**。
-自检：调 `ssh_run` 传 `{}`，返回里带 `mode:"inventory"` 和 `hint` 才是新工具面。
-协议层的验收不受这些影响——`bun run live` / `bun run dist-verify` 走的就是真实 stdio 握手与 `tools/call`。
+改客户端配置或换了 server 的工具面之后，已建立的连接不会自动重建工具目录：
 
-启动后 `tools/list` 只返回两个工具：`ssh_run`、`ssh_file`。
-这是刻意的窄面（判据见 `docs/domain.md`）；`ssh_run` 不传任何参数就是自省模式，
-返回可用主机清单、配置来源、活动连接与会话——原本用来「先看有哪些主机」的那次调用被省掉了。
+- **PI-Desktop**：完整退出并重启进程（只重连 server 无效），或在适配器里 `mcp({ connect: "server" })` 重新发现。
+- **OpenCode**：MCP 连接按目录建立，改配置只重建部分目录的连接，已建立的那条名字带行为都停在旧版本。
+  刷新靠 `opencode service restart`（连接活在常驻 `serve --service` 进程里，只关 TUI 无效），
+  或重建该目录的实例。`opencode mcp` 没有 reload 子命令。
+  自检：`ssh_run({})` 返回里带 `mode:"inventory"` 与 `hint` 才是新工具面。
 
-### 2.1 让客户端能检索到工具（重要）
+协议层验收不受客户端缓存影响：`bun run live` / `bun run dist-verify` 走真实 stdio 握手与 `tools/call`。
 
-很多客户端（含 PI-Desktop 的 `pi-mcp-adapter`）靠词法匹配 `name`/`server`/`description` 来决定
-是否把工具加载进上下文。**它的分词只保留 ASCII**：中文描述实测完全不参与匹配，纯中文 description
-会让模型「找不到工具」。两处都已处理：
+### 让客户端检索得到工具
 
-1. **服务端（可移植，已实现）**：每个工具 description 末尾追加 ASCII `Keywords: ...`，
-   server 还带 `instructions` 说明何时用哪个工具。改的是文本，工具名与 schema 不动。
-2. **客户端（PI-Desktop 专有）**：`mcp.json` 的该 server 下可加 `searchKeywords`，按工具名给关键词，
-   `"*"` 为全 server 通用。它只影响排序，不展示给模型。示例：
+很多客户端靠词法匹配 `name`/`description` 决定是否把工具加载进上下文，而且**分词通常只保留 ASCII**——
+纯中文 description 等于没有。服务端已处理：每个工具 description 末尾带 ASCII `Keywords:`，server 另带
+`instructions` 说明何时用哪个工具（这是对外契约的一部分，契约测试会断言）。
 
-```json
-  "ssh": {
-    "command": "C:/Users/UnaRem/.bun/bin/bun.exe",
-    "args": ["run", "C:/Files/Codes/ssh_mcp/src/index.ts"],
-    "env": { "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json" },
-    "searchKeywords": {
-      "*": ["ssh", "remote", "server", "linux"],
-      "ssh_run": ["run command on remote server", "exec", "df disk usage", "uname", "grep log", "persistent shell"],
-      "ssh_file": ["upload file", "download file", "send file to remote host", "fetch remote file"]
-    }
-  }
-```
+部分客户端还支持侧配置（如 PI-Desktop 的 `mcp.json` 里该 server 下加 `searchKeywords`，按工具名给关键词），
+只影响排序、不展示给模型。客户端侧配置由使用侧自己维护，本仓库不代改。
 
-实测（用 adapter 自带的 `scoreToolMatch` 评分，已提交工具元数据）：仅 description 关键词就能让
-`"check disk usage on the server"` 命中 `ssh_run`；叠加 `searchKeywords` 分数更高、排序更稳。
-工具面从 14 个收成 2 个之后，`searchKeywords` 也要同步改成 `ssh_run` / `ssh_file` 两条——
-按旧工具名写的键不会命中任何工具。
+### 参数校验发生在哪一层
 
-**改动 `mcp.json`（含 `searchKeywords`）或工具 description 后，当前会话的工具目录不会自动刷新：**
-adapter 日志会写 `direct tools frozen after initial sync — reconnects won't rebuild the system prompt`。
-需要**完整退出并重启 PI-Desktop**（不是只重连 server），或在适配器里用 `mcp({ connect: "server" })` 重新发现。
+发布的 JSON Schema 带 `additionalProperties:false`（服务端 `z.object(...).strict()`），越界参数会被点出键名。
+但注意有的客户端（如 OpenCode）发送前会先按 schema 校验一遍：缺字段直接报错、多余的键**静默剥掉**。
+排查「参数没生效」时先分清错误来自客户端还是服务端协议层；两边的边界一致，模型从 schema 就能看见。
 
-客户端配置（`mcp.json` 及其 `searchKeywords`）由使用侧自己维护，本仓库不代改；
-本项目只保证服务端这一侧：description 带 ASCII `Keywords:`、`instructions` 说明何时用哪个工具。
-另外，adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，
-PI-Desktop 的直接注册路径不受它影响（推断，未实测）——要缩短名字只能改服务端 `name` 或工具名。
+## 主机与认证
 
-### 2.2 客户端会先校验参数（实测 2026-10-27，OpenCode）
+### 主机解析顺序
 
-OpenCode 在把参数发出去之前，先用发布出去的 JSON Schema 校验一遍，两种情形行为不同：
+`host` 参数按以下顺序解析，任一命中即可；解析不出来会报错并**列出全部可用别名**（不让模型猜 IP）：
 
-- **缺字段**：直接报错，调用进不到服务端（例：`entries[0].local_path` 缺失 → `Invalid arguments … Missing key`）。
-- **多余的键**：**静默剥掉**，不报错（例：多传 `user`/`port` 也照样执行，服务端收不到它们）。
-
-由此两条要记住：
-
-1. 严格的边界必须在服务端做（`z.object(...).strict()`，发布的 schema 带 `additionalProperties:false`）。
-   协议层会拒绝并点出写错的键名（`Unrecognized keys: "user"`）——这条由 SDK 抛出，没有 `structuredContent`
-   也没有 `error_code`，所以 `test/contract.test.ts` 断言的是文本里的键名，别断言 structuredContent。
-2. 「服务端返回 `bad_input`」与「客户端先拦下」是两条路径：写错的 `entries[].op` 只有在同时给了 `local_path`
-   时才会走到服务端的 `bad_input + allowed_ops`；漏了 `local_path` 就被客户端拦在外面。
-   模型能从 schema 自己看见这个边界（两个路径字段都必填），因此不算缺陷，只是排查时要分清错误来自哪一层。
-
-## 3. 主机与认证
-
-### 3.1 主机解析顺序
-
-`host` 参数按以下顺序解析，任一命中即可；都不是就报错并**列出全部可用别名**（不会让模型猜 IP）：
-
-1. `config.local.json` 里的 profile（见 3.2）；
-2. `~/.ssh/config` 的别名（读 `HostName`/`User`/`Port`/`IdentityFile`，`ProxyJump` 等跳转不跟随）；
+1. `config.local.json` 里的 profile（见下）；
+2. `~/.ssh/config` 的别名（读 `HostName`/`User`/`Port`/`IdentityFile`；`ProxyJump` 等跳转不跟随）；
 3. 直接写 `192.168.1.21` / `user@192.168.1.21` / `host:2222` / `user@[v6]:2222`。
 
-`ssh_run` 不传任何参数就能拿到两处的别名与来源（`source` 字段），以及当前活动连接与会话。
+`ssh_run` 不传参数就能拿到两处的别名与来源（`source` 字段），以及当前活动连接与会话。
 
-### 3.2 本地 profile（含密码的文件不入库）
+### 本地 profile
 
-复制 `config.example.json` 为 `config.local.json`（已在 `.gitignore` 中）：
+复制 `config.example.json` 为 `config.local.json`（已被 `.gitignore` 忽略，含密码的文件永不入库）：
 
 ```json
 {
@@ -205,110 +148,146 @@ OpenCode 在把参数发出去之前，先用发布出去的 JSON Schema 校验�
 字段：`hostname` `port` `user` `password` `key_passphrase` `identity_files` `host_key_policy`（`tofu`/`strict`/`off`）。
 `defaults` 会被具体 profile 覆盖。
 
-### 3.3 认证顺序：密钥优先，密码兜底
+### 认证：密钥优先，密码兜底
 
-- 有可用私钥（`identity_files`，或 `~/.ssh/config` 指定的、或 `~/.ssh/` 下的 id_* 文件）时**先试 publickey**，
-  失败再试密码——这是显式指定的 `authHandler: ["publickey", "password"]`（`ssh2` 默认顺序是密码在前）。
-- 密码来源优先级：`config.local.json` 的 `password` → `SSH_MCP_PASSWORD_<ALIAS大写、非字母数字换成_>` → `SSH_MCP_PASSWORD`。
-- 不会弹密码提示：拿不到凭据就在 `SSH_MCP_READY_TIMEOUT_MS` 内失败，并给出可读原因
-  （实测对密钥被拒且无密码的主机 1.3s 返回「认证失败：… 拒绝了提供的凭据」）。
-- 返回里的 `auth_methods_attempted` / `auth_succeeded_with` 是从 SSH 协议报文实测出来的，不是猜的。
+- 有可用私钥（`identity_files`、`~/.ssh/config` 指定的、或 `~/.ssh/` 下的 `id_*`）时先试 publickey，失败再试密码
+  （显式 `authHandler: ["publickey","password"]`；ssh2 默认顺序是密码在前）。
+- 密码来源优先级：`config.local.json` 的 `password` → 环境变量 `SSH_MCP_PASSWORD_<别名大写、非字母数字换下划线>` → `SSH_MCP_PASSWORD`。
+- 绝不弹交互密码提示：拿不到凭据就在 `SSH_MCP_READY_TIMEOUT_MS` 内失败，原因可读。
+- 返回里的 `auth_methods_attempted` / `auth_succeeded_with` 来自 SSH 协议报文实测，不是猜的。
 
-### 3.4 host key
+### host key
 
-`ssh2` 本身不校验 host key，这里自己实现（`known_hosts` 只**追加**，不改写既有行）：
+`ssh2` 本身不校验 host key，这里自己实现，`known_hosts` 只**追加**、不改写既有行：
 
-- `tofu`（默认）：首次连接记录，之后不匹配就拒绝；
-- `strict`：没有记录就拒绝；
-- `off`：不校验。
-- 支持裸 host（对所有端口生效）、`[host]:port`（仅该端口）、IPv6 方括号形式、通配与 `!` 排除、`|` 哈希条目。
+| 策略 | 行为 |
+| --- | --- |
+| `tofu`（默认） | 首次连接记录，之后不匹配就拒绝（错误里带实际指纹） |
+| `strict` | 没有记录就拒绝 |
+| `off` | 不校验 |
 
-`SSH_MCP_KNOWN_HOSTS` 可指定别的 known_hosts 文件（默认 `~/.ssh/known_hosts`）。
+支持裸 host（对所有端口生效）、`[host]:port`（仅该端口）、IPv6 方括号、通配与 `!` 排除、`|` 哈希条目。
+`SSH_MCP_KNOWN_HOSTS` 可指定别的文件（默认 `~/.ssh/known_hosts`）。
 
-## 4. 工具与返回语义
+### 凭据的威胁模型
 
-对外只有两个工具，参数只放 shell 给不了的东西（判据与不变量见 `docs/domain.md`）。
+目标主机假定在**公司局域网或异地组网**内：明文密码只存在于本地 config 与内网链路；
+即使口令被第三方模型 API 读到，网络层也抵达不了服务器，泄露不构成可兑现的损失。
+因此不做凭据托管类扩展（公钥自动注册、桥代持/代问 sudo 口令、elicitation）。
+把公网主机（如 VPS）加进配置时，这条推理不再成立，需重新评估。
 
-| 工具 | 参数 | 返回 |
-| --- | --- | --- |
-| `ssh_run` | `host` `command`；可选 `session`（写 `keep` 或之前返回的 id）`session_op`（`reset`/`close`）`cwd` `env` `timeout_ms` `max_output_bytes` | `ok` `exit_code` `stdout` `stderr` `cwd` `timed_out` `truncated` + 真实总量（`stdout_bytes`/`stdout_lines` 等）+ 连接元信息（`connection`、`auth_*`、`host_key`） |
-| `ssh_run`（不传参数） | — | 自省：`hosts` 清单与来源、配置路径、`active_connections`、`active_sessions` |
-| `ssh_file` | `host` `entries[]`（`op`=`put`/`get`、`remote_path`、`local_path`、`overwrite`） | 按请求顺序返回每个条目：`bytes_match`、两端字节数、`sha256_local`；单条失败带 `error_code` |
+## 工具与返回语义
 
-用法要点：
+### ssh_run
+
+| 参数 | 说明 |
+| --- | --- |
+| `host` | 别名 / `user@ip` / `host:port`（自省模式可不传） |
+| `command` | 一条原生 shell 命令；不传且无 `session_op` 时是自省模式 |
+| `session` | `keep`（新建并复用）或之前返回的 `session_id`；只有一个活动会话时可省 `host` |
+| `session_op` | `reset`（回登录目录）/ `close`（结束会话），与 `command` 互斥 |
+| `cwd` `env` | 一次性生效的工作目录/环境变量（要跨调用保持就用会话，返回里 `hint` 会说明） |
+| `timeout_ms` `max_output_bytes` | 本次调用的超时与输出预算上限 |
+
+返回：`ok` `exit_code` `stdout` `stderr` `cwd` `timed_out` `truncated` + 真实总量（`stdout_bytes`/`stdout_lines`）
++ 连接元信息（`connection`、`auth_*`、`host_key`）；会话调用带 `session_id`。
+
+自省模式（不传参数）返回：`mode:"inventory"`、`hosts` 清单与来源、配置路径、`active_connections`、`active_sessions`。
+
+### ssh_file
+
+| 参数 | 说明 |
+| --- | --- |
+| `host` | 同上 |
+| `entries[]` | 每条目：`op`（`put`/`get`）、`remote_path`、`local_path`、`overwrite`（默认 false，目标已存在报 `exists`） |
+
+按请求顺序返回每个条目：`bytes_match`、两端字节数、`sha256_local`；单条失败带该条的 `error_code`，其余条目照常执行。
+`~` 经 `realpath` 展开为远端家目录。多条目共用一条 SFTP 连接。
+
+### 用法要点
 
 - **多步、取尾部、区间、过滤、写文件、建目录都写在命令里**：`mkdir -p a && cd a && pwd`、
-  `journalctl -u app | tail -n 50`、`sed -n '120,180p' f`、`cat > f <<'EOF' … EOF`。没有 `commands[]`、
-  `output_mode`、`tail_lines`、`keep_stdin` 这类参数。
-- **用户名/端口/host key 策略不是参数**：写在 `~/.ssh/config`（`User`/`HostName`/`Port`/`StrictHostKeyChecking`）
-  或用 `user@ip`；否则就是 `config.local.json`（见 3.2）。
-- **跨调用保持状态**才用 `session="keep"`：第一次调用建立并返回 `session_id`，之后可以写 id；
-  只有一个活动会话时连 `host` 都能省。`session_op="reset"` 回到登录目录、`session_op="close"` 结束会话。
-- 一次性调用里 `cwd`/`env` 不会带到下一次——结果会带 `hint` 说明怎么改成会话，不需要额外参数。
+  `journalctl -u app | tail -n 50`、`sed -n '120,180p' f`、`cat > f <<'EOF' … EOF`。
+  没有 `commands[]`、`output_mode`、`tail_lines` 这类参数——那是把 shell 的能力重新发明一遍。
+- **用户名/端口/host key 策略不是参数**：写在 `~/.ssh/config` 或用 `user@ip`，或放在 `config.local.json`。
 
-返回语义与错误码：
+### 返回语义
 
 - 成功调用：`ok: true` + JSON（同时给 `structuredContent`）。**命令退出码非 0 不是工具错误**：
-  `isError=false`，但顶层 `ok=false`，请看 `exit_code` 与 `stderr`。
+  `isError=false`、顶层 `ok=false`，看 `exit_code` 与 `stderr` 判定。
 - 工具错误：`isError=true` + `error_code` + 可操作的 `error`，并附上补救所需的事实。
 
 | error_code | 何时 | 附带事实 |
 | --- | --- | --- |
-| `bad_input` | 缺 `command`、`session_op` 与 `command` 同时给、`op` 不是 put/get、多余参数 | `allowed_ops`、`active_sessions`；schema 的 `additionalProperties:false` |
-| `unknown_host` | 别名解析不出来 | `available_hosts`、`ssh_config_path`、`local_config_path` |
-| `connect_failed` / `auth_failed` / `host_key_mismatch` | 握手/凭据/host key | `hint`、`attempted_methods`、`host_key_fingerprint` |
-| `no_session` | 会话不存在或已被 TTL 回收；只凭 `keep` 找不到任何可复用 shell 时也是它（缺 `host` 的说明写在 `error` 里）——「会话不存在」只有这一种错误码 | `active_sessions`、空闲时长与 TTL |
-| `not_found` / `permission` / `exists` | 传输条目的文件系统情形（**按数据返回，调用本身不是错误**）。`exists` 判的是**目标**侧：put 看远端、get 看本地，目标已存在就先报 `exists`，不会再去看源——所以同一个 `local_path` 第二次 `get` 得到的是 `exists` 而不是 `not_found`（实测 2026-10-27） | 条目 `index`、路径 |
+| `bad_input` | 缺 `command`、`session_op` 与 `command` 同时给、`op` 不是 put/get、越界参数 | `allowed_ops`、`active_sessions` |
+| `unknown_host` | 别名解析不出来 | `available_hosts`、两处配置路径 |
+| `connect_failed` / `auth_failed` / `host_key_mismatch` | 握手 / 凭据 / host key | `hint`、`attempted_methods`、`host_key_fingerprint` |
+| `no_session` | 会话不存在、被 TTL 回收，或只凭 `keep` 找不到可复用 shell（缺 `host` 的说明写在 `error` 里）——「会话不存在」只有这一种错误码 | `active_sessions`、空闲时长与 TTL |
+| `not_found` / `permission` / `exists` | 传输条目的文件系统情形（**按数据返回，调用本身不是错误**）；`exists` 判**目标**侧且先于源检查 | 条目 `index`、路径 |
 | `internal` | 其它未归类 | `error`、`cause` |
 
-其他保证：
+### 行为保证
 
-- `timeout_ms` 到期 → `timed_out: true`，server 不死，连接仍可用；
-- 输出超预算 → `truncated: true`，并回报 `stdout_bytes`/`stdout_lines` 等真实总量；想少看点就在命令里用 `head`/`tail`/`sed`；
-- 默认给命令补 `< /dev/null`（`cat` 之类不会挂死）；管道命令不补，以免改变语义；
-- 引号未闭合等语法问题会先走远端 `bash -n` 预检，返回「命令未执行」+ bash 的报错（实测 ~20ms），命令不会半执行；
-- 后台/常驻进程占住 fd → 哨兵超时后返回 `background_suspect: true` 并自动重开会话；
-- 会话空闲超过 TTL → 自动关闭，下次用该 id 会明确说明原因与时长，并提示传 `session="keep"` 重新开始。
+- `timeout_ms` 到期 → `timed_out: true`，server 与连接都还活着；
+- 输出超预算 → `truncated: true`，并回报真实总量；想少看点就在命令里用 `head`/`tail`/`sed`；
+- 一次性调用默认给命令补 `< /dev/null`（`cat` 不会挂死）；管道命令不补，以免改变语义；
+- 引号未闭合等语法错误先过远端 `bash -n` 预检，返回「命令未执行」+ bash 的报错，命令不会半执行；
+- 后台进程占住 fd → 哨兵超时后返回 `background_suspect: true` 并自动重开会话；
+- 会话空闲超 TTL 自动关闭，下次用该 id 会说明原因与时长，并提示 `session="keep"` 重新开始。
 
-## 5. 环境变量（都有默认值）
+## 环境变量（都有默认值）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `SSH_MCP_CONFIG` | `<cwd>/config.local.json` | 本地 profile 文件 |
+| `SSH_MCP_CONFIG` | `<cwd>/config.local.json` | 本地 profile 文件（客户端里务必给绝对路径） |
 | `SSH_MCP_SSH_CONFIG` | `~/.ssh/config` | 覆盖 ssh_config 路径（测试用） |
 | `SSH_MCP_KNOWN_HOSTS` | `~/.ssh/known_hosts` | known_hosts 路径 |
 | `SSH_MCP_PASSWORD` / `SSH_MCP_PASSWORD_<ALIAS>` | — | 密码兜底 |
 | `SSH_MCP_READY_TIMEOUT_MS` | 12000 | 握手/认证等待上限 |
 | `SSH_MCP_EXEC_TIMEOUT_MS` | 30000 | 命令默认超时（工具可覆盖，上限 600000） |
 | `SSH_MCP_SESSION_TTL_MS` | 600000 | 会话空闲 TTL |
-| `SSH_MCP_CONN_TTL_MS` | 300000 | 进程内连接池空闲 TTL（新连接实测 ~1.8s，故默认保留） |
+| `SSH_MCP_CONN_TTL_MS` | 300000 | 进程内连接池空闲 TTL |
 
-## 6. 自检
+## 开发与验收
 
 ```bash
-bun run lint                 # = bunx tsc --noEmit，类型检查
-bun test                     # 离线测试，不需要网络（fake ssh/sftp 替身 + 进程内真 SSH 服务器）
-                             # test/contract.test.ts 锁的是对外契约：两个工具、参数集合、错误码、自省模式
-bun run live                 # 对真实主机跑 25 项端到端验收，读 config.local.json
-LIVE_HOST=lan bun run live
-bun run build                # 单文件产物 dist/ssh-mcp.exe（见 1.1）
-bun run dist-verify          # 对产物跑 11 项验收，默认验 ~/tools/ssh-mcp.exe；可传路径验 dist/
-bun run dist-verify dist/ssh-mcp.exe
-bun run dist-verify dist/ssh-mcp.exe --offline   # 只跑协议层 5 项（CI 里没有验收主机，远端相关项记 SKIP）
+bun run lint                                     # = bunx tsc --noEmit
+bun test                                         # 离线测试，不需要网络（fake 替身 + 进程内真 SSH 服务器）
+bun run live                                     # 对真实主机 25 项端到端验收，读 config.local.json
+bun run build                                    # 单文件产物 dist/ssh-mcp.exe
+bun run dist-verify                              # 对产物 11 项验收，默认 ~/tools/ssh-mcp.exe
+bun run dist-verify dist/ssh-mcp.exe --offline   # 只跑协议层 5 项（CI 用，远端相关记 SKIP）
 ```
 
-`live-verify` 会复制一份 `~/.ssh/known_hosts` 到临时目录来跑 TOFU/不匹配用例，不动真实文件，跑完清理远端临时目录。
-改完 `src/**` 的远端行为，收官必须跑一次 `bun run live`；只改文档不必跑。
-`bun run build` 之后必须跑 `bun run dist-verify`：`--compile` 把依赖（含 `ssh2` 的原生模块）打进单文件，
-构建期不报错不代表运行期没问题。
+`live` 会复制一份 `~/.ssh/known_hosts` 到临时目录来跑 TOFU/不匹配用例，不动真实文件，跑完清理远端临时目录。
+分层：`test/contract.test.ts` 锁对外契约（两个工具、参数集合恰好等于声明、错误码、自省模式、ASCII `Keywords:`、
+版本与 `package.json` 一致）；其余单测按模块对应（会话/连接/SFTP/配置）。
+**改对外面先改契约测试（红）再实现（绿）**——`docs/domain.md` 与契约测试是同一结论的两处，必须同步改。
+改完 `src/**` 的远端行为，收官跑一次 `bun run live`；改完 `bun run build`，必须跑 `bun run dist-verify`。
 
-## 7. 边界
+## 发布
+
+只发 windows-x64 单文件产物，push 驱动：
+
+1. 把 `package.json` 的 `version` 改一行，提交并 push 到 `main`；
+2. GitHub Actions（`.github/workflows/release.yml`）：版本号没发过才继续——
+   lint + 离线测试 → `--target=bun-windows-x64` 编译 → `dist-verify --offline` 自检 →
+   在该 commit 创建 `v<版本>` tag → zip（约 37 MiB，exe 96 MiB 逼近单资产上限）挂到 Release，
+   Release 说明由 commit 历史生成；版本号没改的 push 整段跳过。
+
+版本号只写在 `package.json` 一处（`src/tool.ts` 读它，契约测试断言 `serverInfo.version` 一致，tag 由 CI 创建），
+保证 tag ↔ commit ↔ 二进制三者对应。要发其它平台就新增一个 job，前提是先在该平台的 CI 里跑通产物自检。
+
+## 边界（明确不做）
 
 - 只支持 Linux 远端；不做 Windows 远端语义适配。
-- 不启用 ControlMaster/ControlPersist，不引入系统 ssh 子进程或 plink 后端。
-- 不做后台任务/job 家族（异步任务表、轮询取结果）：与「不留常驻进程」冲突，已取消。
+- 不启用 ControlMaster/ControlPersist，不引入系统 ssh 子进程或 plink 后端；不留任何常驻后台进程。
+- 不做后台任务/job 家族（异步任务表、轮询取结果）。
 - 不把 SFTP 的 list/stat/read/write/mkdir 做成工具：远端 `ls`/`stat`/`sed`/`cat`/`mkdir -p` 更贴近模型既有能力。
-- 不做 npm 发布 / Docker / Web UI / 遥测。对外分发只走 `bun build --compile` 的单文件产物（见 1.1），
-  不引入包管理分发链路；产物由 tag 驱动的 GitHub Actions 挂到 Release，目前只发 windows-x64（要加平台就再加一个 job，
-  前提是先在该平台的 CI 里跑通产物自检）。
+- 不做凭据托管类扩展（公钥自动注册、桥代持/代问 sudo 口令、elicitation）——理由见「凭据的威胁模型」。
+- 不做 npm 发布 / Docker / Web UI / 遥测；对外分发只有上面的单文件产物。
 - 不读写 `~/.ssh/config`，不改写私钥；对 `known_hosts` 仅追加。
+
+## License
+
+[MIT](LICENSE)
