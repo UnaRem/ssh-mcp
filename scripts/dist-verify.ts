@@ -128,10 +128,14 @@ async function main() {
         assert.equal(p.local_config_exists, true, "config.local.json 没读到（产物不依赖 cwd）");
         return `hosts=${p.hosts.map((h: any) => h.name).join(",")} config=${p.local_config_path}`;
       }
-      // CI 里没有本地 profile：应当如实报告读不到，并把来源说清（这不是失败）
+      // CI 里没有本地 profile：首启应在活动路径（exe 同级）自动生成模板，自省如实指向它
       assert.ok(Array.isArray(p.hosts), "hosts 应当是数组");
-      assert.equal(p.local_config_exists, false);
-      return `无本地 profile：local_config_exists=false，从 ${p.ssh_config_path} 读到 ${p.hosts.length} 个别名`;
+      assert.equal(p.local_config_exists, true, "没有任何配置时首启应生成模板（只创建不覆盖）");
+      assert.ok(
+        (p.hosts ?? []).some((h: any) => h.name === "example"),
+        "模板没有出现在清单里（检查 ensureLocalConfigTemplate）",
+      );
+      return `无本地 profile：首启生成模板于 ${p.local_config_path}，另从 ${p.ssh_config_path} 读到 ${p.hosts.length} 个别名`;
     });
 
     await checkRemote("真实执行：新建连接并返回内核", async () => {
@@ -194,18 +198,13 @@ async function main() {
       return c.text.slice(0, 90);
     });
 
-    await check("exe 同级的 config.local.json 自动生效（不设 SSH_MCP_CONFIG、cwd 无配置）", async () => {
+    await check("exe 同级配置：首启自动生成模板，填好即生效（不设 SSH_MCP_CONFIG、cwd 无配置）", async () => {
       const dirCfg = fs.mkdtempSync(path.join(os.tmpdir(), "dist-cfg-"));
       const dirCwd = fs.mkdtempSync(path.join(os.tmpdir(), "dist-cwd-"));
-      let client: Client | undefined;
-      try {
-        const exeCopy = path.join(dirCfg, path.basename(EXE));
-        fs.copyFileSync(EXE, exeCopy);
-        const cfgHere = path.join(dirCfg, "config.local.json");
-        fs.writeFileSync(cfgHere, JSON.stringify({ hosts: { probehost: { hostname: "192.0.2.7", user: "u" } } }));
+      const startBare = async () => {
         // 全新实例：不设 SSH_MCP_CONFIG，cwd 是空目录——只有「exe 同级」这条候选能命中
         const transport = new StdioClientTransport({
-          command: exeCopy,
+          command: path.join(dirCfg, path.basename(EXE)),
           args: [],
           cwd: dirCwd,
           stderr: "pipe",
@@ -215,13 +214,30 @@ async function main() {
             USERPROFILE: process.env.USERPROFILE ?? os.homedir(),
           },
         });
-        client = new Client({ name: "dist-verify-cfg", version: "1.0.0" });
+        const client = new Client({ name: "dist-verify-cfg", version: "1.0.0" });
         await client.connect(transport);
-        const p = await call2(client, "ssh_run", {});
-        assert.equal(p.local_config_exists, true, "exe 同级的配置没被发现");
-        assert.equal(path.normalize(p.local_config_path), path.normalize(cfgHere), "发现的路径不是 exe 同级那份");
-        assert.ok((p.hosts ?? []).some((h: any) => h.name === "probehost"), "发现的配置没供给 hosts 清单");
-        return `local_config_path=${p.local_config_path}`;
+        return client;
+      };
+      let client: Client | undefined;
+      try {
+        fs.copyFileSync(EXE, path.join(dirCfg, path.basename(EXE)));
+        const cfgHere = path.join(dirCfg, "config.local.json");
+        // ① 旁边没有配置：首次启动自动生成模板，自省指向它
+        client = await startBare();
+        let p = await call2(client, "ssh_run", {});
+        assert.ok(fs.existsSync(cfgHere), "exe 同级没有自动生成 config.local.json");
+        assert.equal(p.local_config_exists, true, "自动生成的模板没被承认");
+        assert.equal(path.normalize(p.local_config_path), path.normalize(cfgHere), "模板路径不在 exe 同级");
+        assert.ok((p.hosts ?? []).some((h: any) => h.name === "example"), "模板里没有 example 占位可参照");
+        await client.close();
+        client = undefined;
+        // ② 用户照着模板填好：新实例直接生效，且模板不被再次覆盖
+        fs.writeFileSync(cfgHere, JSON.stringify({ hosts: { probehost: { hostname: "192.0.2.7", user: "u" } } }));
+        client = await startBare();
+        p = await call2(client, "ssh_run", {});
+        assert.ok((p.hosts ?? []).some((h: any) => h.name === "probehost"), "填好的配置没有生效");
+        assert.ok(!(p.hosts ?? []).some((h: any) => h.name === "example"), "已有配置被模板覆盖了（只能创建，不许改写）");
+        return `模板生成与生效都在 ${cfgHere}`;
       } finally {
         await client?.close().catch(() => {});
         fs.rmSync(dirCfg, { recursive: true, force: true });

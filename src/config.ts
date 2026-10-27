@@ -54,6 +54,42 @@ export function localConfigPath(): string {
   return candidates.find((p) => fs.existsSync(p)) ?? candidates[candidates.length - 1]!;
 }
 
+/**
+ * 首次启动、所有候选位置都没有配置时，生成一份格式可见的模板（TOFU/known_hosts 同款：只创建，从不覆盖或改写）。
+ * 写入位置 = 第一优先的可写候选（显式 env → exe 同级 → cwd）；写完「活动路径」自然命中它，与发现顺序一致。
+ * 占位主机用 RFC5737 的 192.0.2.0/24（TEST-NET，不会与真实主机相撞）；说明放 `_readme`/`_note` 键——
+ * loadLocalConfig 只取 hosts/defaults，未知键无害。返回创建的路径；已存在或都写不了返回 null（不阻塞启动）。
+ */
+export function ensureLocalConfigTemplate(): string | null {
+  const targets = localConfigCandidates();
+  if (targets.some((p) => fs.existsSync(p))) return null; // 任何一层已有配置 → 不动它
+  const template = {
+    _readme:
+      "填好 hosts 里的条目即生效（每次调用都重新读，不必重启）。" +
+      "password 可换成 identity_files；~/.ssh/config 里已有的别名不必写在这里。本键可删。",
+    defaults: { host_key_policy: "tofu" },
+    hosts: {
+      example: {
+        _note: "占位示例（192.0.2.0/24 是保留地址段），改成你的机器，或改键名接着用。",
+        hostname: "192.0.2.10",
+        port: 22,
+        user: "ubuntu",
+        password: "把密码写在这里",
+      },
+    },
+  };
+  for (const p of targets) {
+    try {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, JSON.stringify(template, null, 2) + "\n");
+      return p;
+    } catch {
+      continue; // 这层不可写（只读目录等）：试下一层
+    }
+  }
+  return null;
+}
+
 export function loadLocalConfig(): LocalConfigFile {
   const p = localConfigPath();
   let raw: string;

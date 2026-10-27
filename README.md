@@ -60,13 +60,13 @@ bun run dist-verify                    # 对安装位跑 12 项端到端验收
 2. **可执行文件同级的 `config.local.json`** —— 推荐放这里，客户端里一条 env 都不用设；
 3. 进程 cwd 下的 `config.local.json`（源码直跑场景；客户端的 cwd 不可靠，别依赖）。
 
-新机器三步：
+三处都没有时，**首次启动会在最优可写位置自动生成一份模板**（含 `_readme` 说明与 `example` 占位条目；
+只创建、从不覆盖已有文件——与 host key 的 TOFU 同款语义）。新机器两步：
 
-1. 解压 exe 到固定位置（如 `~/tools/ssh-mcp.exe`）；
-2. 把配置写/拷成 **exe 同级的 `config.local.json`**（从旧机器拷，或照仓库的 `config.example.json` 写一份）——
-   整目录拷走就是完整迁移；
-3. 客户端 MCP 配置只给一条绝对路径：`command` → exe。验证：调 `ssh_run({})`（自省模式），
-   返回的 `hosts` 清单正确、`local_config_exists: true` 即通。
+1. 解压 exe 到固定位置（如 `~/tools/ssh-mcp.exe`），客户端 `command` 只指向它——没有第二条配置；
+2. 启动一次后，在 exe 同级打开自动生成的 `config.local.json`，把 `example` 改成你的机器（填完即生效，不用重启）。
+
+验证：调 `ssh_run({})`（自省模式），返回的 `hosts` 清单正确、`local_config_exists: true` 即通。
 
 host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自动记录）；要复用旧机器的信任记录就拷贝该文件
 或设 `SSH_MCP_KNOWN_HOSTS`。新机器上若存在 `~/.ssh/config`，其别名会被自动读取，不必在 profile 里重复登记。

@@ -16,7 +16,7 @@ import { z } from "zod";
 
 import { connectTo, type ConnHandle } from "./backend.ts";
 import type { Acquired, BridgeCtx, ToolDef } from "./bridge.ts";
-import { listHosts, resolveTarget, type TargetInput } from "./config.ts";
+import { ensureLocalConfigTemplate, listHosts, resolveTarget, type TargetInput } from "./config.ts";
 import { fromError } from "./envelope.ts";
 import { KnownHostsStore } from "./knownhosts.ts";
 import { SessionManager } from "./session.ts";
@@ -41,6 +41,12 @@ const settings = {
 
 const knownHosts = KnownHostsStore.load(settings.knownHostsPath);
 const sessions = new SessionManager(settings.sessionTtlMs);
+
+// 首启没有任何配置 → 在活动路径生成模板（只创建不覆盖；写不了也只是告警，不阻塞启动）。
+const createdTemplate = ensureLocalConfigTemplate();
+if (createdTemplate) {
+  console.error(`[ssh-mcp] 未找到本地 profile，已在 ${createdTemplate} 生成配置模板：填好 hosts 即生效。`);
+}
 
 /**
  * 连接池：同一 user@host:port 复用一条 SSH 连接（新连接实测 ~1.8s）。

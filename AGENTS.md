@@ -15,7 +15,8 @@ src/
   envelope.ts    失败侧唯一出口：ErrorCode 枚举、BridgeError、fromError/classifyMessage
   bridge.ts      门面与内部上下文的边界类型：BridgeCtx / Acquired / ToolDef / runOptions
   index.ts       装配：配置与超时、进程内连接池、会话登记、inventory()、错误映射、注册中间件
-  config.ts      主机解析：config.local.json profile → ~/.ssh/config 别名 → IP 直连；凭据与环境变量；配置发现：env → exe 同级 → cwd
+  config.ts      主机解析：config.local.json profile → ~/.ssh/config 别名 → IP 直连；凭据与环境变量；
+                 配置发现：env → exe 同级 → cwd，三处都没有则首启生成模板（只创建不覆盖）
   backend.ts     ssh2 连接：密钥优先 authHandler、hostVerifier、认证过程观测、错误文案翻译
   knownhosts.ts  known_hosts 解析/匹配/仅追加写入（裸 host、[host]:port、IPv6、通配、哈希）
   session.ts     连续终端核心：哨兵协议、stdin 保护、bash -n 预检、ShellSession、SessionManager(TTL)
@@ -71,8 +72,9 @@ LICENSE          MIT
 2. **单文件产物**：`bun run build` → `dist/ssh-mcp.exe`（约 96 MiB，含 bun 运行时），装到 `~/tools/ssh-mcp.exe`，
    客户端 `command` 直接指向它，对端不需要装 bun（README「安装与运行」）。产物不入版本管理；
    更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（12 项，全 PASS 才算完）。
-   配置文件放 exe 同级会被自动找到（客户端零 env）；放别处靠 `SSH_MCP_CONFIG` 绝对路径。源码直跑没有「exe 同级」
-   可言（execPath 是 bun），此时必须显式给，cwd 兜底在客户端不可靠。
+   配置文件放 exe 同级会被自动找到（客户端零 env）；三处都没有则首启自动生成模板（只创建不覆盖，TOFU 同款）。
+   放别处靠 `SSH_MCP_CONFIG` 绝对路径。源码直跑没有「exe 同级」可言（execPath 是 bun），此时必须显式给，
+   cwd 兜底在客户端不可靠。
 
 验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
 不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 12 项，重点看 `--compile` 后依赖是否真的带着走）。
@@ -156,6 +158,9 @@ LICENSE          MIT
 - `process.execPath` 在源码直跑时是 bun 二进制的路径，不是入口脚本；`bun build --compile` 产物里才是 exe 自身。
   「配置发现找 exe 同级」正是靠这个差异在源码模式自然跳过（bun 目录不会有 config.local.json），落到 cwd 兜底（实测 2026-10-27，
   产物级验收见 dist-verify「exe 同级」项）。
+- 「找配置的路径」与「生成模板的位置」不是同一个语义：`localConfigPath()` 返回**已存在**的候选，
+  都没有时给 cwd 兜底（用于如实报告）；模板要写**第一优先的可写候选**（产物模式=exe 同级）。
+  混用会让模板落到不可控的 cwd（实测 2026-10-27，产物级验收抓到）。
 - `--compile` 构建期不报错不代表运行期没问题：产物必须过 `scripts/dist-verify.ts`。
   观察到一次（2026-10-27）产物刚复制到新位置后第一次运行有 5 项以 transport 关闭的形式失败，之后三次 11/11；
   原因未查（怀疑新落地的 exe 被首次扫描拦截），别把它当成契约回归。

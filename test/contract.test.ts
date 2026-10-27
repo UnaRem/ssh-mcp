@@ -27,8 +27,12 @@ const RUN_FORBIDDEN = ["user", "port", "host_key_policy", "keep_stdin", "command
 const FILE_ENTRY_PROPS = ["op", "remote_path", "local_path", "overwrite"];
 const FILE_FORBIDDEN = ["user", "port", "host_key_policy", "content", "append", "mode", "recursive", "max_bytes"];
 
-/** 启动一次 server，跑一段检查，然后关掉进程并确认它真的退出（不留常驻进程）。 */
-async function withServer(run: (client: Client) => Promise<void>) {
+/** 启动一次 server，跑一段检查，然后关掉进程并确认它真的退出（不留常驻进程）。
+ *  localConfigContent: null → 活动路径上不预写文件（用于「首启生成模板」路径）。 */
+async function withServer(
+  run: (client: Client, paths: { dir: string; localCfg: string }) => Promise<void>,
+  opts?: { localConfigContent?: string | null },
+) {
   const dir = mkdtempSync(join(tmpdir(), "ssh-mcp-contract-"));
   const sshCfg = join(dir, "ssh_config");
   writeFileSync(
@@ -47,7 +51,9 @@ async function withServer(run: (client: Client) => Promise<void>) {
     ].join("\n"),
   );
   const localCfg = join(dir, "config.local.json");
-  writeFileSync(localCfg, JSON.stringify({ hosts: { profile_only: { hostname: "10.0.0.9", user: "u" } } }, null, 2));
+  if (opts?.localConfigContent !== null) {
+    writeFileSync(localCfg, opts?.localConfigContent ?? JSON.stringify({ hosts: { profile_only: { hostname: "10.0.0.9", user: "u" } } }, null, 2));
+  }
 
   const transport = new StdioClientTransport({
     command: process.execPath, // 用当前 bun 可执行文件启动，避免依赖 PATH
@@ -73,7 +79,7 @@ async function withServer(run: (client: Client) => Promise<void>) {
   try {
     await client.connect(transport);
     childPid = transport.pid; // connect 之后进程才存在，pid 只能在这里取
-    await run(client);
+    await run(client, { dir, localCfg });
   } finally {
     await client.close().catch(() => {});
     // 契约边界：除 MCP server 自身外不启动常驻进程，客户端关闭后不应有残留
@@ -179,6 +185,26 @@ describe("对外契约：可判定的失败", () => {
       expect(p.active_sessions).toBeArray();
       expect(r.isError).toBeFalsy();
     });
+  });
+
+  test("活动配置路径不存在：启动时生成模板（只创建、不覆盖，TOFU 同款语义）", async () => {
+    await withServer(
+      async (client, paths) => {
+        // server 启动后发现活动路径上没有文件，就在这里建模板——新机器零拷贝可用
+        const raw = JSON.parse(readFileSync(paths.localCfg, "utf8"));
+        expect(raw.hosts.example).toBeObject();
+        // 占位地址用 RFC5737 TEST-NET，不会与真实主机撞；格式要素齐可见
+        expect(String(raw.hosts.example.hostname)).toMatch(/^192\.0\.2\./);
+        expect(raw.defaults.host_key_policy).toBe("tofu");
+        // 模板即「存在」：自省报告指向它，别名清单含 example（用户照着改/删）
+        const r = await client.callTool({ name: "ssh_run", arguments: {} });
+        const p = payloadOf(r);
+        expect(p.local_config_exists).toBe(true);
+        expect(p.local_config_path).toBe(paths.localCfg);
+        expect((p.hosts as { name: string }[]).map((h) => h.name)).toContain("example");
+      },
+      { localConfigContent: null },
+    );
   });
 
   test("未知主机：error_code=unknown_host 并回可用别名，文本里也能读到", async () => {
