@@ -1,26 +1,37 @@
 # ssh-mcp 项目 AGENTS.md
 
-Bun + TypeScript 写的 MCP stdio server：远端 Linux 的命令执行、SFTP 传输、连续终端会话。
-后端固定为 `ssh2` 库；不引入系统 `ssh`/`plink` 子进程，不引入 ControlMaster、npm 发布、Docker、Web UI。
+Bun + TypeScript 写的 MCP stdio server：远端 Linux 的命令执行与文件传输。
+**对外只有一层「SSH 桥」：两个工具 `ssh_run`（跑命令）+ `ssh_file`（搬文件）**；命令按原生 shell 透传，
+桥只补 shell 给不了的东西。判据与不变量在 `docs/domain.md`，`test/contract.test.ts` 锁的就是那份结论。
+后端固定为 `ssh2` 库；不引入系统 `ssh`/`plink` 子进程，不引入 ControlMaster、后台任务/job、npm 发布、Docker、Web UI。
 
 ## 目录地图
 
 ```
 src/
-  index.ts       MCP server 入口：工具注册、进程内连接池、错误映射（guard）
+  tools/run.ts   对外契约 1：ssh_run 的 schema + handler（自省、会话解析、一次性执行）
+  tools/file.ts  对外契约 2：ssh_file 的 schema + handler（put/get 批量，单条失败按数据返回）
+  schema.ts      参数片段与其文档：只放 shell 给不了的东西；默认值/范围写进 description
+  envelope.ts    失败侧唯一出口：ErrorCode 枚举、BridgeError、fromError/classifyMessage
+  bridge.ts      门面与内部上下文的边界类型：BridgeCtx / Acquired / ToolDef / runOptions
+  index.ts       装配：配置与超时、进程内连接池、会话登记、inventory()、错误映射、注册中间件
   config.ts      主机解析：config.local.json profile → ~/.ssh/config 别名 → IP 直连；凭据与环境变量
   backend.ts     ssh2 连接：密钥优先 authHandler、hostVerifier、认证过程观测、错误文案翻译
   knownhosts.ts  known_hosts 解析/匹配/仅追加写入（裸 host、[host]:port、IPv6、通配、哈希）
   session.ts     连续终端核心：哨兵协议、stdin 保护、bash -n 预检、ShellSession、SessionManager(TTL)
-  exec.ts        ssh_exec / ssh_batch：临时 ShellSession 跑一条或多条命令
-  sftlops.ts     sftp_* 全部操作；`~` 经 realpath 展开为远端家目录；大小上限
+  exec.ts        一次性执行（ssh_run 不带 session 的那条路径）：临时 ShellSession 跑一条命令
+  sftlops.ts     SFTP 操作（含 openSftp/put/get）；`~` 经 realpath 展开为远端家目录；大小上限
   result.ts      输出预算与截断（head 60% + tail 40% + 总量回报）、ExecResult 字段
   tool.ts        工具结果形状（content JSON + structuredContent）、默认超时/上限常量
   types.ts       共用类型
-test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身
-scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.local.json
+docs/domain.md   领域模型：判据（桥只补 shell 给不了的）、统一语言、不变量、错误码语义
+test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约
+scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.local.json
 .pi/goal/        目标契约；.pi/work/ 是临时探针，不入版本管理
 ```
+
+工具层（`src/tools/*`）不得 import 连接池/会话登记等实现细节，只经 `BridgeCtx` 取用——
+「对外只有一层桥」要靠这条边界检查，而不是靠约定。
 
 不入版本管理（见 `.gitignore`）：`config.local.json`、`.env*`、`*.log`、`.pi/work/`、`node_modules/`、`bun.lock`、`.known_hosts.append.log`。
 含明文密码的只有 `config.local.json`，必须保持被忽略。
@@ -39,8 +50,11 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
 - 单跑某个文件：`bun test test/session.test.ts`。测试里 `beforeAll/afterAll` 是 Bun 的写法，**没有** `before/after`。
 - 改会话/哨兵/预检逻辑：`test/session.test.ts`、`test/exec.test.ts`；改连接与 host key：`test/backend.test.ts`、`test/knownhosts.test.ts`；
   改 SFTP：`test/sftlops.test.ts`；改配置解析：`test/config.test.ts`（它用 `SSH_MCP_SSH_CONFIG`/`SSH_MCP_CONFIG`/临时 `HOME` 隔离真实 `~/.ssh`）；
-  改工具面与握手：`test/mcp.test.ts`（它会真起一个 `bun run src/index.ts` 子进程走 stdio）。
-- 只改文档不必跑 live；改了 `src/**` 的远端行为，收官要跑一次 `bun run live`。
+  **改对外契约（工具名、参数集合、错误码、自省模式）：`test/contract.test.ts`**——它真起一个 `bun run src/index.ts`
+  子进程走 stdio，断言属性集合恰好等于声明值（多一个参数即失败），并断言每个参数自带文档与 ASCII `Keywords:`。
+- 契约是 TDD 资产：改对外面先改 `test/contract.test.ts`（红），再实现（绿）。`docs/domain.md` 与它是同一结论的两处，
+  必须同步改；只改一边会被下一个改动打回。
+- 只改文档不必跑 live；改了 `src/**` 的远端行为，收官要跑一次 `bun run live`（25 项，全 PASS 才算完）。
 - 写验收断言前先读实现返回的真实字段名（例如 `sftpPut` 返回 `bytes_match`，没有 `overwritten`），别凭空造字段。
 
 ## 交付入口
@@ -55,8 +69,10 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
   `ssh2` 的 `cpu-features` 需要编译（装包约 30s），加载失败会退回 JS crypto——不影响正确性但会变慢。
 - 验收主机：`unarem@192.168.1.21`（OpenSSH 9.6p1 Ubuntu，Linux 6.8.0-147-generic），密码认证；有 `sha256sum` 与 sftp 子系统。
   `~/.ssh/config` 里的 `los` 密钥被服务器拒绝，是「认证失败要快速可读」的反例，不作正向用例。
-- 连接成本：新建 SSH 连接实测 ~1.8s（到 los，TCP+KEX+认证失败）。因此「快」靠 `ssh_batch`、进程内连接池（`SSH_MCP_CONN_TTL_MS`）
-  和连续会话，而不是系统层复用；任何改动若让「一次调用多次建连」，就是回归。
+- 连接成本：新建 SSH 连接实测 ~1.8s（到 los，TCP+KEX+认证失败）；复用同一条连接的一条命令实测 5–60ms。
+  因此「快」靠**进程内连接池（`SSH_MCP_CONN_TTL_MS`）**、连续会话、`&&` 合并多步（一次往返）、
+  以及 `ssh_file` 一次传多个条目（共用一条 SFTP 连接），不是系统层复用；
+  任何改动若让「一次调用多次建连」，就是回归。
 - 密码兜底：本机无 `sshpass`，绝不弹交互提示；凭据缺失必须在 `readyTimeout` 内失败。
 
 ## 踩过的坑（改这些代码前先看）
@@ -82,7 +98,7 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
   **身份名取 `src/index.ts` 里 `new McpServer({ name })`，不是 mcp.json 的 server 键**（实测 2026-10-26：改 mcp.json 的键无效，
   只有这里的 `name` 决定前缀）。先前「server 键进入工具名」是从 `git`/`chrome-devtools` 推的，它们的 `name` 恰好与键相同，是混淆样本。
 - 不同客户端的命名来源不同，两侧要分别决定，别拿一边的改动去「统一」另一边（实测 2026-10-27）：
-  OpenCode 用 `~/.config/opencode/opencode.json` 的 mcp 键作命名空间（现为 `ssh-tool` → `tools["ssh-tool"].ssh_exec`），
+  OpenCode 用 `~/.config/opencode/opencode.json` 的 mcp 键作命名空间（现为 `ssh-tool` → `tools["ssh-tool"].ssh_run`），
   **不读** serverInfo 的 `name`；PI-Desktop 用 `name` 拼 `mcp_` 前缀，改 mcp.json 的键无效。
   所以 OpenCode 的键叫什么都不会与工具名重复；`name` 只能按 PI-Desktop 的约束取 `ssh`（`ssh-tool` 会得到
   `mcp_ssh_tool_ssh_batch`，`ssh` 段被隔开重复，与出过错的形态同类——推断，未实测）。
@@ -97,6 +113,20 @@ scripts/live-verify.ts  真实主机端到端验收（21 项），读 config.loc
   `"upload file to server"` 185→281、`"download remote file"` 145→241，其余查询分数不变。反例是「全部去掉协议前缀」：
   单词 `ssh` 查询 562→432、`execute a command over ssh` 332→292，且泛化名（`run`/`read`/`list`）会与本地
   `fastctx` 工具互抢。检索按 token 去重计分，所以名字里重复的 `ssh`/`mcp` 不加分也不减分，重叠只是观感问题。
+- `mcp.registerTool` 从对象上取下来再调用必须 `.bind(mcp)`，否则 `this._registeredTools` 是 undefined，
+  server 启动即退出（实测报错 `TypeError: undefined is not an object (evaluating 'this._registeredTools')`）。
+- MCP SDK 在调用 handler **之前**就用 inputSchema 解析参数并剥掉未知键，所以自己在 handler 里查「多余参数」永远查不到。
+  要参数严格就写 `z.object(shape).strict()`：发布的 JSON Schema 会带 `additionalProperties:false`，模型能自己看见边界。
+  代价：这条失败由 SDK 抛出，返回只有文本、**没有 structuredContent**，也没有 `error_code`——契约测试因此断言的是
+  「文本里点出写错的键名」，别断言 structuredContent。
+- `ssh_run` 的 `host`/`command` 必须是 `.optional()`：自省模式（什么都不传）要在 schema 层通过，
+  否则 SDK 直接报 `expected string, received undefined at host`，根本进不到 handler（实测 2026-10-27）。
+  「该传什么」由 handler 判定并给可操作说明。
+- `tool.ts` 的 `ok()` 要写成 `{ ok: true, ...payload }`：反过来（`{...payload, ok: true}`）会把工具自己给的
+  `ok:false` 抹平，「命令 exit_code != 0 是数据但顶层 ok=false」这条契约就失效（实测：`sh -c 'exit 7'` 返回 ok=true）。
+- 出错的调用**不要**无条件摘连接池项：`dropHost` 会连带关掉该主机上的会话，实测一次 `op` 写错的 `ssh_file`
+  调用让 `keep` 会话凭空消失、后续 `session` 调用报 `no_session`。连接真的断了由 ssh2 的 `close`/`error` 事件摘除，
+  空闲过 TTL 的在下次取用时判定丢弃（`acquire` 里必须在取用时判 TTL，只靠 30s 一次的清扫会让短 TTL 形同虚设）。
 
 ## 环境事实的维护
 

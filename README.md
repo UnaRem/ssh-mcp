@@ -1,7 +1,12 @@
 # ssh-mcp —— 给 agent 用的 SSH/SFTP 工具
 
-一个 stdio 上的 MCP server，让 agent 用**尽量少的调用**在 Linux 远端执行命令、传文件、维持连续终端，
+一个 stdio 上的 MCP server，让 agent 用**尽量少的调用**在 Linux 远端执行命令、传文件，
 并拿到**结构化、可判定**的结果：退出码、stdout/stderr 分离、是否超时、是否截断、当前 cwd。
+
+对外只有一层「SSH 桥」：**`ssh_run`（跑命令）+ `ssh_file`（搬文件）**。
+命令按原生 shell 写（`&&`、管道、`tail -n`、`sed -n`、heredoc、`mkdir -p`），
+桥只补 shell 给不了的东西（认证与 host key、连接复用、退出码分离、输出预算、跨调用的会话状态）。
+为什么这样切、哪些不变量不能破，见 `docs/domain.md`。
 
 技术栈：Bun + TypeScript + 官方 MCP SDK + [`ssh2`](https://github.com/mscdex/ssh2) 库后端。
 **不**调用系统 `ssh`/`scp`/`sftp` 子进程，**不**用 plink，**不**用 ControlMaster，
@@ -40,18 +45,18 @@ bun install
 工具名前缀由服务端自己决定：PI-Desktop 的可见工具名 = `mcp_` + server 身份名（`-`→`_`）+ `_` + 工具原名，
 身份名取 `src/index.ts` 里 `new McpServer({ name: "ssh" })`（实测 2026-10-26：改 mcp.json 的键不影响前缀）。
 旧的 `name: "ssh-mcp"` 会得到 `mcp_ssh_mcp_ssh_exec`，前缀与工具名交错重复，模型容易漏写或重复 `ssh_` 段而调用失败；
-现在是 `mcp_ssh_ssh_exec`。**如果以前在 mcp.json 里登记过 `ssh-mcp`，请把那条旧条目删掉**，否则同一个 server 注册两份，工具目录翻倍。
+现在是 `mcp_ssh_ssh_run` / `mcp_ssh_ssh_file`。**如果以前在 mcp.json 里登记过 `ssh-mcp`，请把那条旧条目删掉**，否则同一个 server 注册两份，工具目录翻倍。
 `command` 用 bun 的绝对路径（`C:/Users/UnaRem/.bun/bin/bun.exe`）以免受 GUI 进程 PATH 差异影响。**改完这个文件要完整退出并重启 PI-Desktop 进程才会重新发现工具，只重连 server 无效（原因见 2.1）。**
 不设 `SSH_MCP_CONFIG` 时 server 会退回 `<进程 cwd>/config.local.json`，所以显式写绝对路径更稳。
 也可以写 `bun start`（`package.json` 的 `start` 脚本就是 `bun run src/index.ts`），但 MCP 客户端里推荐上面的直接形式，少一层进程。
 
 另一类客户端不这样命名：OpenCode 用它配置文件（`~/.config/opencode/opencode.json`）里的 mcp 键作命名空间
-（本机登记为 `ssh-tool` → `tools["ssh-tool"].ssh_exec`），**不读**服务端的身份名，改键即时热重载、不用重启。
+（本机登记为 `ssh-tool` → `tools["ssh-tool"].ssh_run`），**不读**服务端的身份名，改键即时热重载、不用重启。
 两边的命名来源不同：PI-Desktop 的前缀改 `src/index.ts` 的 `name`，OpenCode 只改它的键。
 
-启动后 `tools/list` 应返回 14 个工具：
-`ssh_hosts`、`ssh_exec`、`ssh_batch`、`session_open`、`session_exec`、`session_reset`、`session_close`、
-`sftp_list`、`sftp_stat`、`sftp_read`、`sftp_write`、`sftp_mkdir`、`sftp_upload`、`sftp_download`。
+启动后 `tools/list` 只返回两个工具：`ssh_run`、`ssh_file`。
+这是刻意的窄面（判据见 `docs/domain.md`）；`ssh_run` 不传任何参数就是自省模式，
+返回可用主机清单、配置来源、活动连接与会话——原本用来「先看有哪些主机」的那次调用被省掉了。
 
 ### 2.1 让客户端能检索到工具（重要）
 
@@ -71,15 +76,16 @@ bun install
     "env": { "SSH_MCP_CONFIG": "C:/Files/Codes/ssh_mcp/config.local.json" },
     "searchKeywords": {
       "*": ["ssh", "remote", "server", "linux"],
-      "ssh_exec": ["run command on remote server", "exec", "df disk usage", "uname", "grep log"],
-      "sftp_upload": ["upload file", "send file to remote host"],
-      "sftp_download": ["download file", "fetch remote file"]
+      "ssh_run": ["run command on remote server", "exec", "df disk usage", "uname", "grep log", "persistent shell"],
+      "ssh_file": ["upload file", "download file", "send file to remote host", "fetch remote file"]
     }
   }
 ```
 
 实测（用 adapter 自带的 `scoreToolMatch` 评分，已提交工具元数据）：仅 description 关键词就能让
-`"check disk usage on the server"` 命中 `ssh_exec`；叠加 `searchKeywords` 分数更高、排序更稳。
+`"check disk usage on the server"` 命中 `ssh_run`；叠加 `searchKeywords` 分数更高、排序更稳。
+工具面从 14 个收成 2 个之后，`searchKeywords` 也要同步改成 `ssh_run` / `ssh_file` 两条——
+按旧工具名写的键不会命中任何工具。
 
 **改动 `mcp.json`（含 `searchKeywords`）或工具 description 后，当前会话的工具目录不会自动刷新：**
 adapter 日志会写 `direct tools frozen after initial sync — reconnects won't rebuild the system prompt`。
@@ -95,7 +101,7 @@ adapter 日志会写 `direct tools frozen after initial sync — reconnects won'
 2. `~/.ssh/config` 的别名（读 `HostName`/`User`/`Port`/`IdentityFile`，`ProxyJump` 等跳转不跟随）；
 3. 直接写 `192.168.1.21` / `user@192.168.1.21` / `host:2222` / `user@[v6]:2222`。
 
-先调 `ssh_hosts` 能拿到两处的别名与来源，以及当前活动会话。
+`ssh_run` 不传任何参数就能拿到两处的别名与来源（`source` 字段），以及当前活动连接与会话。
 
 ### 3.2 本地 profile（含密码的文件不入库）
 
@@ -145,34 +151,48 @@ adapter 日志会写 `direct tools frozen after initial sync — reconnects won'
 
 ## 4. 工具与返回语义
 
-所有工具成功时返回 `ok: true` + JSON（同时给 `structuredContent`）；失败时 `isError` + `error_type`/`error`。
-**命令退出码非 0 不是工具错误**，而是数据：请看 `exit_code` 与 `stderr`。
+对外只有两个工具，参数只放 shell 给不了的东西（判据与不变量见 `docs/domain.md`）。
 
-| 工具 | 关键参数 | 说明 |
+| 工具 | 参数 | 返回 |
 | --- | --- | --- |
-| `ssh_hosts` | — | 列别名与来源、活动会话 |
-| `ssh_exec` | `host` `command` [`user` `port` `host_key_policy` `timeout_ms` `max_output_bytes` `keep_stdin`] | 单条命令，一次性 shell |
-| `ssh_batch` | `host` `commands[]` [`stop_on_error` `max_steps`] | 同一条连接、同一个 shell 内按序执行；批内 `cd` 有效 |
-| `session_open` | `host` [`session_id` `cwd` `env`] | 开一个持续存在的远端 shell |
-| `session_exec` | `session_id` `command` [`timeout_ms` `max_output_bytes` `keep_stdin`] | `cd`/`export` 跨调用保持，每次返回退出码与 cwd |
-| `session_reset` | `session_id` | 重开 shell，cwd 回到登录初始目录 |
-| `session_close` | [`session_id`] | 关一个或全部会话 |
-| `sftp_list` | `host` `path` [`include_hidden`] | `~` 展开为远端用户家目录（用 `realpath .` 求得） |
-| `sftp_stat` | `host` `path` | type/size/mode/mtime/uid/gid |
-| `sftp_read` | `host` `path` [`max_bytes`] | 文本读；超限时 `truncated=true` 且 `total_bytes` 是真实大小 |
-| `sftp_write` | `host` `path` `content` [`append` `mode`] | 上限 512 KiB，更大文件用 `sftp_upload` |
-| `sftp_mkdir` | `host` `path` [`recursive`] | 已存在的目录列入 `already_existing`，不报错 |
-| `sftp_upload` | `host` `local_path` `remote_path` [`overwrite`] | 返回 `local_bytes`/`remote_bytes`/`bytes_match` |
-| `sftp_download` | `host` `remote_path` `local_path` [`overwrite`] | 本地父目录自动创建 |
+| `ssh_run` | `host` `command`；可选 `session`（写 `keep` 或之前返回的 id）`session_op`（`reset`/`close`）`cwd` `env` `timeout_ms` `max_output_bytes` | `ok` `exit_code` `stdout` `stderr` `cwd` `timed_out` `truncated` + 真实总量（`stdout_bytes`/`stdout_lines` 等）+ 连接元信息（`connection`、`auth_*`、`host_key`） |
+| `ssh_run`（不传参数） | — | 自省：`hosts` 清单与来源、配置路径、`active_connections`、`active_sessions` |
+| `ssh_file` | `host` `entries[]`（`op`=`put`/`get`、`remote_path`、`local_path`、`overwrite`） | 按请求顺序返回每个条目：`bytes_match`、两端字节数、`sha256_local`；单条失败带 `error_code` |
+
+用法要点：
+
+- **多步、取尾部、区间、过滤、写文件、建目录都写在命令里**：`mkdir -p a && cd a && pwd`、
+  `journalctl -u app | tail -n 50`、`sed -n '120,180p' f`、`cat > f <<'EOF' … EOF`。没有 `commands[]`、
+  `output_mode`、`tail_lines`、`keep_stdin` 这类参数。
+- **用户名/端口/host key 策略不是参数**：写在 `~/.ssh/config`（`User`/`HostName`/`Port`/`StrictHostKeyChecking`）
+  或用 `user@ip`；否则就是 `config.local.json`（见 3.2）。
+- **跨调用保持状态**才用 `session="keep"`：第一次调用建立并返回 `session_id`，之后可以写 id；
+  只有一个活动会话时连 `host` 都能省。`session_op="reset"` 回到登录目录、`session_op="close"` 结束会话。
+- 一次性调用里 `cwd`/`env` 不会带到下一次——结果会带 `hint` 说明怎么改成会话，不需要额外参数。
+
+返回语义与错误码：
+
+- 成功调用：`ok: true` + JSON（同时给 `structuredContent`）。**命令退出码非 0 不是工具错误**：
+  `isError=false`，但顶层 `ok=false`，请看 `exit_code` 与 `stderr`。
+- 工具错误：`isError=true` + `error_code` + 可操作的 `error`，并附上补救所需的事实。
+
+| error_code | 何时 | 附带事实 |
+| --- | --- | --- |
+| `bad_input` | 缺 `command`、`session_op` 与 `command` 同时给、`op` 不是 put/get、多余参数 | `allowed_ops`、`active_sessions`；schema 的 `additionalProperties:false` |
+| `unknown_host` | 别名解析不出来 | `available_hosts`、`ssh_config_path`、`local_config_path` |
+| `connect_failed` / `auth_failed` / `host_key_mismatch` | 握手/凭据/host key | `hint`、`attempted_methods`、`host_key_fingerprint` |
+| `no_session` | 会话不存在或已被 TTL 回收 | `active_sessions`、空闲时长与 TTL |
+| `not_found` / `permission` / `exists` | 传输条目的文件系统情形（**按数据返回，调用本身不是错误**） | 条目 `index`、路径 |
+| `internal` | 其它未归类 | `error`、`cause` |
 
 其他保证：
 
 - `timeout_ms` 到期 → `timed_out: true`，server 不死，连接仍可用；
-- 输出超预算 → `truncated: true`，并回报 `stdout_bytes`/`stdout_lines` 等真实总量；
-- 默认给命令补 `< /dev/null`（`cat` 之类不会挂死）；管道命令不补，以免改变语义；需要交互输入用 `keep_stdin: true`；
+- 输出超预算 → `truncated: true`，并回报 `stdout_bytes`/`stdout_lines` 等真实总量；想少看点就在命令里用 `head`/`tail`/`sed`；
+- 默认给命令补 `< /dev/null`（`cat` 之类不会挂死）；管道命令不补，以免改变语义；
 - 引号未闭合等语法问题会先走远端 `bash -n` 预检，返回「命令未执行」+ bash 的报错（实测 ~20ms），命令不会半执行；
 - 后台/常驻进程占住 fd → 哨兵超时后返回 `background_suspect: true` 并自动重开会话；
-- 会话空闲超过 TTL → 自动关闭，下次用该 `session_id` 会明确说明原因与时长。
+- 会话空闲超过 TTL → 自动关闭，下次用该 id 会明确说明原因与时长，并提示传 `session="keep"` 重新开始。
 
 ## 5. 环境变量（都有默认值）
 
@@ -190,17 +210,21 @@ adapter 日志会写 `direct tools frozen after initial sync — reconnects won'
 ## 6. 自检
 
 ```bash
-bun test                     # 离线单元测试，不需要网络（fake ssh/sftp 替身 + 进程内真 SSH 服务器）
-bunx tsc --noEmit            # 类型检查（等价 npm run lint）
-bun run scripts/live-verify.ts   # 对真实主机跑 21 项端到端验收，读 config.local.json
-LIVE_HOST=lan bun run scripts/live-verify.ts
+bun run lint                 # = bunx tsc --noEmit，类型检查
+bun test                     # 离线测试，不需要网络（fake ssh/sftp 替身 + 进程内真 SSH 服务器）
+                             # test/contract.test.ts 锁的是对外契约：两个工具、参数集合、错误码、自省模式
+bun run live                 # 对真实主机跑 25 项端到端验收，读 config.local.json
+LIVE_HOST=lan bun run live
 ```
 
 `live-verify` 会复制一份 `~/.ssh/known_hosts` 到临时目录来跑 TOFU/不匹配用例，不动真实文件，跑完清理远端临时目录。
+改完 `src/**` 的远端行为，收官必须跑一次 `bun run live`；只改文档不必跑。
 
 ## 7. 边界
 
 - 只支持 Linux 远端；不做 Windows 远端语义适配。
 - 不启用 ControlMaster/ControlPersist，不引入系统 ssh 子进程或 plink 后端。
+- 不做后台任务/job 家族（异步任务表、轮询取结果）：与「不留常驻进程」冲突，已取消。
+- 不把 SFTP 的 list/stat/read/write/mkdir 做成工具：远端 `ls`/`stat`/`sed`/`cat`/`mkdir -p` 更贴近模型既有能力。
 - 不做 npm 发布 / Docker / Web UI / 遥测。
 - 不读写 `~/.ssh/config`，不改写私钥；对 `known_hosts` 仅追加。
