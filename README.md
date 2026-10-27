@@ -52,6 +52,20 @@ bun run dist-verify                    # 对安装位跑 11 项端到端验收
 > 覆盖前先退出 MCP 客户端：客户端正持着这个 exe 时 Windows 不让写（`Device or resource busy`）。
 > 产物必须过 `dist-verify`：`--compile` 把依赖（含原生模块）打进单文件，构建期不报错不代表运行期没问题。
 
+### 新机器上的配置
+
+凭据不在产物里（zip 只有 exe；`config.local.json` 含明文密码，永不入库）。配置文件放哪都行，靠环境变量指过去，
+查找顺序只有两条：`SSH_MCP_CONFIG`（用这条，绝对路径）→ 兜底 `<server 进程 cwd>/config.local.json`（客户端的 cwd 不可靠，别依赖）。
+
+1. 解压 exe 到固定位置（如 `~/tools/ssh-mcp.exe`）；
+2. 写配置：从旧机器拷 `config.local.json`，或照仓库的 `config.example.json` 写一份；
+   建议放 exe 同目录（如 `~/tools/ssh-mcp.config.json`），迁移时整目录拷走；
+3. 客户端 MCP 配置里两条绝对路径：`command` → exe，`env.SSH_MCP_CONFIG` → 配置文件；
+4. 验证：调 `ssh_run({})`（自省模式），返回的 `hosts` 清单正确、`local_config_exists: true` 即通。
+
+host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自动记录）；要复用旧机器的信任记录就拷贝该文件
+或设 `SSH_MCP_KNOWN_HOSTS`。新机器上若存在 `~/.ssh/config`，其别名会被自动读取，不必在 profile 里重复登记。
+
 ## 接入 MCP 客户端
 
 所有客户端的配置形状相同，`command` 指向源码（经 bun）或 exe 都可以。用绝对路径——客户端的工作目录不确定。
