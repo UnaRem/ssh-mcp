@@ -87,3 +87,8 @@ config / backend / session / exec / sftlops / knownhosts / result   内部上下
 - 后台任务/job 家族（异步任务表、轮询取结果）——与「不留常驻进程」的边界冲突，已取消。
 - 把 SFTP 的 list/stat/read/write/mkdir 做成工具——远端 `ls`/`stat`/`sed`/`cat`/`mkdir -p` 更贴近模型既有能力。
 - Windows 远端语义、ControlMaster、系统 `ssh` 子进程、npm 发布、Docker、Web UI。
+- 凭据托管类扩展（公钥自动注册「ssh-copy-id 化」、桥代持/代问 sudo 口令、elicitation 要密码）——不做。
+  威胁模型（用户定，2026-10-27）：目标主机限定在公司局域网/异地组网，明文密码只存在于本地 config 与内网链路；
+  即使口令被第三方模型 API 读到，网络层也抵达不了服务器，泄露不构成可兑现的损失。
+  凭据的保管由用户自己控制：config.local.json 明文与 `SSH_MCP_PASSWORD_*` 环境变量两条既有通道已够。
+  边界：这条推理只对「网络不可达的服务器」成立——若将来把公网主机（如 VPS）加进配置，需重新评估再谈这些扩展。
