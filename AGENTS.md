@@ -88,31 +88,20 @@ scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.loc
   要 `stat` 一下才知道是「已存在」。
 - 连接池按 `user@host:port` 复用，与本地 profile 无关；要验证「密钥优先」或 TOFU 重新校验，必须新建 server 进程或把
   `SSH_MCP_CONN_TTL_MS` 调小。
-- 客户端（PI-Desktop `pi-mcp-adapter`）的工具检索是 ASCII 词法匹配，分词丢弃中文：纯中文 description
- 等于没有，模型找不到工具（实测 `ssh` 查询只命中 `ssh_hosts`/`session_open`，不命中 `ssh_exec`）。
- 因此每个工具 description 末尾要带 ASCII `Keywords:`，且 server 带 `instructions`。改 description 文本
- 不动工具名与 schema（名称决定 `mcp_` 前缀与既有调用）。PI-Desktop 还有 `mcp.json` 的 `searchKeywords`
- 机制（按工具名/`*`，仅影响排序）。改了 description 或 `searchKeywords` 后当前会话工具目录不刷新，
- 要完整重启 PI-Desktop 才重新发现。
-- PI-Desktop 的可见工具名 = `mcp_` + 规范化后的 server 身份名（`-` → `_`）+ `_` + 工具原名。
-  **身份名取 `src/index.ts` 里 `new McpServer({ name })`，不是 mcp.json 的 server 键**（实测 2026-10-26：改 mcp.json 的键无效，
-  只有这里的 `name` 决定前缀）。先前「server 键进入工具名」是从 `git`/`chrome-devtools` 推的，它们的 `name` 恰好与键相同，是混淆样本。
-- 不同客户端的命名来源不同，两侧要分别决定，别拿一边的改动去「统一」另一边（实测 2026-10-27）：
-  OpenCode 用 `~/.config/opencode/opencode.json` 的 mcp 键作命名空间（现为 `ssh-tool` → `tools["ssh-tool"].ssh_run`），
-  **不读** serverInfo 的 `name`；PI-Desktop 用 `name` 拼 `mcp_` 前缀，改 mcp.json 的键无效。
-  所以 OpenCode 的键叫什么都不会与工具名重复；`name` 只能按 PI-Desktop 的约束取 `ssh`（`ssh-tool` 会得到
-  `mcp_ssh_tool_ssh_batch`，`ssh` 段被隔开重复，与出过错的形态同类——推断，未实测）。
-  OpenCode 改这个键不需要重启：配置文件热重载，MCP server 随之重启（`opencode mcp list` 可见 `ssh-tool connected`）。
-- 前缀与工具名交错重复会让模型写错工具名：`name: "ssh-mcp"` 时真实名 `mcp_ssh_mcp_ssh_batch`，实测 5 次调用全错——
-  4 次漏写 `ssh_` 段（`mcp_ssh_mcp_batch`/`mcp_ssh_mcp_exec`，调用回落为文本）、1 次重复段（`mcp_ssh_mcp_mcp_ssh_batch`）。
-  2026-10-26 改 `name: "ssh"` → `mcp_ssh_ssh_*`（只剩一个 `ssh` 段，无交错）。改完要在 PI-Desktop 端删掉 mcp.json 里旧的
-  `ssh-mcp` 登记，否则同一 server 注册两份、工具目录翻倍。
-- adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，PI-Desktop 直接注册路径不受它影响
-  （推断，未实测）。要缩短名字只能改 `McpServer` 的 `name` 或工具名，`toolPrefix` 无用。
-- 改名 `sftp_put`/`sftp_get` → `sftp_upload`/`sftp_download`（2026-10-26）：实测用 adapter 的 `scoreToolMatch`，
-  `"upload file to server"` 185→281、`"download remote file"` 145→241，其余查询分数不变。反例是「全部去掉协议前缀」：
-  单词 `ssh` 查询 562→432、`execute a command over ssh` 332→292，且泛化名（`run`/`read`/`list`）会与本地
-  `fastctx` 工具互抢。检索按 token 去重计分，所以名字里重复的 `ssh`/`mcp` 不加分也不减分，重叠只是观感问题。
+- 工具检索普遍按 ASCII 词法匹配（分词丢弃中文）：纯中文 description 等于没有，模型找不到工具
+  （实测：`ssh` 查询只命中含 `ssh` 的泛化名，不命中真正要用的工具）。因此每个工具 description 末尾必须带
+  ASCII `Keywords:`，server 另带 `instructions`。这属于对外契约，`test/contract.test.ts` 会断言。
+- 客户端可见的工具名 = 客户端侧命名空间 + 工具原名，而命名空间的来源各客户端不同：有的取服务端
+  `new McpServer({ name })`，有的取客户端配置里的 mcp 键。两条通用结论：
+  1) 服务端 `name` 要短，且不能与工具名的段交错重复——`name:"ssh-mcp"` 时真实名是 `mcp_ssh_mcp_ssh_batch`，
+     实测 5 次调用全错（4 次漏 `ssh_` 段、1 次重复段），改成 `name:"ssh"` 后只剩一个 `ssh` 段；
+  2) 换 `name` 之后要在客户端删掉旧身份的登记，否则同一个 server 注册两份、工具目录翻倍。
+- 工具改名会改变检索得分（2026-10-26 实测：`sftp_put`→`sftp_upload` 让 upload 类查询 185→281）。
+  反例是去掉协议前缀改用泛化名（`run`/`read`/`list`）：会与同一环境里其它工具互抢。
+  检索按 token 去重计分，所以名字里重复的段不加分也不减分，重叠只是观感问题。
+- 改了 description 或客户端侧的关键词，当前会话的工具目录通常不刷新：按所用客户端的重发现方式处理
+  （有的要完整重启进程，有的改配置即热重载）。各客户端的具体接入配置写在 README 第 2 节——
+  那是使用侧的配置，不是本项目的约束，改客户端配置不动本仓库的代码与测试。
 - `mcp.registerTool` 从对象上取下来再调用必须 `.bind(mcp)`，否则 `this._registeredTools` 是 undefined，
   server 启动即退出（实测报错 `TypeError: undefined is not an object (evaluating 'this._registeredTools')`）。
 - MCP SDK 在调用 handler **之前**就用 inputSchema 解析参数并剥掉未知键，所以自己在 handler 里查「多余参数」永远查不到。

@@ -91,6 +91,11 @@ bun install
 adapter 日志会写 `direct tools frozen after initial sync — reconnects won't rebuild the system prompt`。
 需要**完整退出并重启 PI-Desktop**（不是只重连 server），或在适配器里用 `mcp({ connect: "server" })` 重新发现。
 
+客户端配置（`mcp.json` 及其 `searchKeywords`）由使用侧自己维护，本仓库不代改；
+本项目只保证服务端这一侧：description 带 ASCII `Keywords:`、`instructions` 说明何时用哪个工具。
+另外，adapter 的 `toolPrefix`（`none`/`short`/`mcp`/`server`）只作用于 adapter 的 proxy 路径，
+PI-Desktop 的直接注册路径不受它影响（推断，未实测）——要缩短名字只能改服务端 `name` 或工具名。
+
 ## 3. 主机与认证
 
 ### 3.1 主机解析顺序
