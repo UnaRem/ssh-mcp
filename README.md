@@ -46,7 +46,7 @@ bun install          # ssh2 的 cpu-features 原生模块会编译（约 30s）
 ```bash
 bun run build
 cp dist/ssh-mcp.exe ~/tools/
-bun run dist-verify                    # 对安装位跑 11 项端到端验收
+bun run dist-verify                    # 对安装位跑 12 项端到端验收
 ```
 
 > 覆盖前先退出 MCP 客户端：客户端正持着这个 exe 时 Windows 不让写（`Device or resource busy`）。
@@ -54,14 +54,19 @@ bun run dist-verify                    # 对安装位跑 11 项端到端验收
 
 ### 新机器上的配置
 
-凭据不在产物里（zip 只有 exe；`config.local.json` 含明文密码，永不入库）。配置文件放哪都行，靠环境变量指过去，
-查找顺序只有两条：`SSH_MCP_CONFIG`（用这条，绝对路径）→ 兜底 `<server 进程 cwd>/config.local.json`（客户端的 cwd 不可靠，别依赖）。
+凭据不在产物里（zip 只有 exe；`config.local.json` 含明文密码，永不入库）。配置文件的查找顺序：
+
+1. 环境变量 `SSH_MCP_CONFIG`（任意位置的绝对路径）；
+2. **可执行文件同级的 `config.local.json`** —— 推荐放这里，客户端里一条 env 都不用设；
+3. 进程 cwd 下的 `config.local.json`（源码直跑场景；客户端的 cwd 不可靠，别依赖）。
+
+新机器三步：
 
 1. 解压 exe 到固定位置（如 `~/tools/ssh-mcp.exe`）；
-2. 写配置：从旧机器拷 `config.local.json`，或照仓库的 `config.example.json` 写一份；
-   建议放 exe 同目录（如 `~/tools/ssh-mcp.config.json`），迁移时整目录拷走；
-3. 客户端 MCP 配置里两条绝对路径：`command` → exe，`env.SSH_MCP_CONFIG` → 配置文件；
-4. 验证：调 `ssh_run({})`（自省模式），返回的 `hosts` 清单正确、`local_config_exists: true` 即通。
+2. 把配置写/拷成 **exe 同级的 `config.local.json`**（从旧机器拷，或照仓库的 `config.example.json` 写一份）——
+   整目录拷走就是完整迁移；
+3. 客户端 MCP 配置只给一条绝对路径：`command` → exe。验证：调 `ssh_run({})`（自省模式），
+   返回的 `hosts` 清单正确、`local_config_exists: true` 即通。
 
 host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自动记录）；要复用旧机器的信任记录就拷贝该文件
 或设 `SSH_MCP_KNOWN_HOSTS`。新机器上若存在 `~/.ssh/config`，其别名会被自动读取，不必在 profile 里重复登记。
@@ -83,8 +88,8 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 ```
 
 - `command` 建议用 bun 的绝对路径（如 `C:/Users/<you>/.bun/bin/bun.exe`），免受 GUI 进程 PATH 差异影响。
-- `SSH_MCP_CONFIG` 必须是绝对路径：配置文件不在产物里（含明文密码，永不入库），
-  不显式给会退回「进程 cwd 下的 `config.local.json`」，而客户端的 cwd 不可靠。
+- 配置文件在 exe 同级时会被自动找到，不用设任何 env；放在别处时用 `SSH_MCP_CONFIG` 给绝对路径。
+  源码直跑（经 bun）没有「exe 同级」可言，此时必须显式给——兜底走进程 cwd，而客户端的 cwd 不可靠。
 
 ### 工具叫什么名字（两类客户端不同）
 
@@ -254,7 +259,7 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `SSH_MCP_CONFIG` | `<cwd>/config.local.json` | 本地 profile 文件（客户端里务必给绝对路径） |
+| `SSH_MCP_CONFIG` | 见「新机器上的配置」：exe 同级 → cwd | 本地 profile 文件（不在默认位就给它绝对路径） |
 | `SSH_MCP_SSH_CONFIG` | `~/.ssh/config` | 覆盖 ssh_config 路径（测试用） |
 | `SSH_MCP_KNOWN_HOSTS` | `~/.ssh/known_hosts` | known_hosts 路径 |
 | `SSH_MCP_PASSWORD` / `SSH_MCP_PASSWORD_<ALIAS>` | — | 密码兜底 |
@@ -270,8 +275,8 @@ bun run lint                                     # = bunx tsc --noEmit
 bun test                                         # 离线测试，不需要网络（fake 替身 + 进程内真 SSH 服务器）
 bun run live                                     # 对真实主机 25 项端到端验收，读 config.local.json
 bun run build                                    # 单文件产物 dist/ssh-mcp.exe
-bun run dist-verify                              # 对产物 11 项验收，默认 ~/tools/ssh-mcp.exe
-bun run dist-verify dist/ssh-mcp.exe --offline   # 只跑协议层 5 项（CI 用，远端相关记 SKIP）
+bun run dist-verify                              # 对产物 12 项验收，默认 ~/tools/ssh-mcp.exe
+bun run dist-verify dist/ssh-mcp.exe --offline   # 只跑协议层 6 项（CI 用，远端相关记 SKIP）
 ```
 
 `live` 会复制一份 `~/.ssh/known_hosts` 到临时目录来跑 TOFU/不匹配用例，不动真实文件，跑完清理远端临时目录。

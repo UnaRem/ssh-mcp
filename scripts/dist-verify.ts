@@ -3,7 +3,7 @@
  *
  * 跑法：bun run dist-verify                        默认验 ~/tools/ssh-mcp.exe（完整，连远端）
  *       bun run dist-verify dist/ssh-mcp.exe       验刚构建出来的产物
- *       bun run dist-verify --offline              只跑协议层 5 项（CI 用：没有内网验收主机）
+ *       bun run dist-verify --offline              只跑协议层 6 项（CI 用：没有内网验收主机）
  *       SSH_MCP_DIST=<abs> bun run dist-verify
  *
  * 为什么单独一个脚本：`bun build --compile` 把依赖（含 ssh2 的原生模块）打进单文件，
@@ -48,7 +48,7 @@ async function check(name: string, fn: () => Promise<string | void> | string | v
 
 /**
  * 需要连远端的检查。CI 里没有内网验收主机，`--offline` 时记为 SKIP（不算失败也不算通过）。
- * 离线那五项（握手、身份与版本、工具面、自省、多余参数被拒）已经覆盖「依赖是否真的被打进产物」这一层。
+ * 离线那六项（握手、身份与版本、工具面、自省、多余参数被拒、exe 同级配置发现）已经覆盖「依赖是否真的被打进产物」这一层。
  */
 async function checkRemote(name: string, fn: () => Promise<string | void> | string | void) {
   if (OFFLINE) {
@@ -192,6 +192,41 @@ async function main() {
       assert.equal(c.isError, true);
       assert.match(c.text, /user/);
       return c.text.slice(0, 90);
+    });
+
+    await check("exe 同级的 config.local.json 自动生效（不设 SSH_MCP_CONFIG、cwd 无配置）", async () => {
+      const dirCfg = fs.mkdtempSync(path.join(os.tmpdir(), "dist-cfg-"));
+      const dirCwd = fs.mkdtempSync(path.join(os.tmpdir(), "dist-cwd-"));
+      let client: Client | undefined;
+      try {
+        const exeCopy = path.join(dirCfg, path.basename(EXE));
+        fs.copyFileSync(EXE, exeCopy);
+        const cfgHere = path.join(dirCfg, "config.local.json");
+        fs.writeFileSync(cfgHere, JSON.stringify({ hosts: { probehost: { hostname: "192.0.2.7", user: "u" } } }));
+        // 全新实例：不设 SSH_MCP_CONFIG，cwd 是空目录——只有「exe 同级」这条候选能命中
+        const transport = new StdioClientTransport({
+          command: exeCopy,
+          args: [],
+          cwd: dirCwd,
+          stderr: "pipe",
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: process.env.HOME ?? os.homedir(),
+            USERPROFILE: process.env.USERPROFILE ?? os.homedir(),
+          },
+        });
+        client = new Client({ name: "dist-verify-cfg", version: "1.0.0" });
+        await client.connect(transport);
+        const p = await call2(client, "ssh_run", {});
+        assert.equal(p.local_config_exists, true, "exe 同级的配置没被发现");
+        assert.equal(path.normalize(p.local_config_path), path.normalize(cfgHere), "发现的路径不是 exe 同级那份");
+        assert.ok((p.hosts ?? []).some((h: any) => h.name === "probehost"), "发现的配置没供给 hosts 清单");
+        return `local_config_path=${p.local_config_path}`;
+      } finally {
+        await client?.close().catch(() => {});
+        fs.rmSync(dirCfg, { recursive: true, force: true });
+        fs.rmSync(dirCwd, { recursive: true, force: true });
+      }
     });
 
     await checkRemote("清理远端临时文件", async () => {

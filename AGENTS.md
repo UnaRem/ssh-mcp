@@ -15,7 +15,7 @@ src/
   envelope.ts    失败侧唯一出口：ErrorCode 枚举、BridgeError、fromError/classifyMessage
   bridge.ts      门面与内部上下文的边界类型：BridgeCtx / Acquired / ToolDef / runOptions
   index.ts       装配：配置与超时、进程内连接池、会话登记、inventory()、错误映射、注册中间件
-  config.ts      主机解析：config.local.json profile → ~/.ssh/config 别名 → IP 直连；凭据与环境变量
+  config.ts      主机解析：config.local.json profile → ~/.ssh/config 别名 → IP 直连；凭据与环境变量；配置发现：env → exe 同级 → cwd
   backend.ts     ssh2 连接：密钥优先 authHandler、hostVerifier、认证过程观测、错误文案翻译
   knownhosts.ts  known_hosts 解析/匹配/仅追加写入（裸 host、[host]:port、IPv6、通配、哈希）
   session.ts     连续终端核心：哨兵协议、stdin 保护、bash -n 预检、ShellSession、SessionManager(TTL)
@@ -27,7 +27,7 @@ src/
 docs/domain.md   领域模型：判据（桥只补 shell 给不了的）、统一语言、不变量、错误码语义
 test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约
 scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.local.json
-scripts/dist-verify.ts  单文件产物的验收（11 项；--offline 只跑协议层 5 项，给 CI 用）
+scripts/dist-verify.ts  单文件产物的验收（12 项；--offline 只跑协议层 6 项，给 CI 用）
 .github/workflows/release.yml  打 tag → 编译 windows-x64 产物 → 离线自检 → zip 附到 Release
 LICENSE          MIT
 .pi/goal/        目标契约；.pi/work/ 是临时探针，不入版本管理
@@ -50,8 +50,8 @@ LICENSE          MIT
 | `bun start` | `bun run src/index.ts` | 起 MCP server（stdio） |
 | `bun run live` | `bun run scripts/live-verify.ts` | 对真实主机跑端到端验收 |
 | `bun run build` | `bun build --compile src/index.ts --outfile dist/ssh-mcp.exe` | 单文件产物（`dist/` 不入库） |
-| `bun run dist-verify` | `bun run scripts/dist-verify.ts` | 对产物跑 11 项验收，默认 `~/tools/ssh-mcp.exe`，可传路径 |
-| `bun run dist-verify dist/ssh-mcp.exe --offline` | 同上，只跑协议层 5 项 | CI 用（没有内网验收主机），远端相关项记 SKIP |
+| `bun run dist-verify` | `bun run scripts/dist-verify.ts` | 对产物跑 12 项验收，默认 `~/tools/ssh-mcp.exe`，可传路径 |
+| `bun run dist-verify dist/ssh-mcp.exe --offline` | 同上，只跑协议层 6 项 | CI 用（没有内网验收主机），远端相关项记 SKIP |
 
 - 单跑某个文件：`bun test test/session.test.ts`。测试里 `beforeAll/afterAll` 是 Bun 的写法，**没有** `before/after`。
 - 改会话/哨兵/预检逻辑：`test/session.test.ts`、`test/exec.test.ts`；改连接与 host key：`test/backend.test.ts`、`test/knownhosts.test.ts`；
@@ -70,11 +70,12 @@ LICENSE          MIT
 1. **源码直跑**：客户端用绝对路径 `bun run <abs>/src/index.ts` 启动（README「接入 MCP 客户端」的配置片段）。
 2. **单文件产物**：`bun run build` → `dist/ssh-mcp.exe`（约 96 MiB，含 bun 运行时），装到 `~/tools/ssh-mcp.exe`，
    客户端 `command` 直接指向它，对端不需要装 bun（README「安装与运行」）。产物不入版本管理；
-   更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（11 项，全 PASS 才算完）。
-   配置一律靠 `SSH_MCP_CONFIG` 的绝对路径：产物里不含 `config.local.json`，靠 cwd 兜底在客户端不可靠。
+   更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（12 项，全 PASS 才算完）。
+   配置文件放 exe 同级会被自动找到（客户端零 env）；放别处靠 `SSH_MCP_CONFIG` 绝对路径。源码直跑没有「exe 同级」
+   可言（execPath 是 bun），此时必须显式给，cwd 兜底在客户端不可靠。
 
 验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
-不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 11 项，重点看 `--compile` 后依赖是否真的带着走）。
+不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 12 项，重点看 `--compile` 后依赖是否真的带着走）。
 
 **自动发布（只 windows-x64，push 驱动）**：发版 = 把 `package.json` 的 `version` 改一行 → push 到 main →
 `.github/workflows/release.yml` 跑：装依赖（靠 `bun.lock`）→ 查远端有没有 `v<version>` tag（有就整段跳过，
@@ -152,6 +153,9 @@ LICENSE          MIT
 - 出错的调用**不要**无条件摘连接池项：`dropHost` 会连带关掉该主机上的会话，实测一次 `op` 写错的 `ssh_file`
   调用让 `keep` 会话凭空消失、后续 `session` 调用报 `no_session`。连接真的断了由 ssh2 的 `close`/`error` 事件摘除，
   空闲过 TTL 的在下次取用时判定丢弃（`acquire` 里必须在取用时判 TTL，只靠 30s 一次的清扫会让短 TTL 形同虚设）。
+- `process.execPath` 在源码直跑时是 bun 二进制的路径，不是入口脚本；`bun build --compile` 产物里才是 exe 自身。
+  「配置发现找 exe 同级」正是靠这个差异在源码模式自然跳过（bun 目录不会有 config.local.json），落到 cwd 兜底（实测 2026-10-27，
+  产物级验收见 dist-verify「exe 同级」项）。
 - `--compile` 构建期不报错不代表运行期没问题：产物必须过 `scripts/dist-verify.ts`。
   观察到一次（2026-10-27）产物刚复制到新位置后第一次运行有 5 项以 transport 关闭的形式失败，之后三次 11/11；
   原因未查（怀疑新落地的 exe 被首次扫描拦截），别把它当成契约回归。

@@ -36,8 +36,22 @@ export interface LocalConfigFile {
   defaults?: HostProfile;
 }
 
+/**
+ * 配置文件的发现顺序（未显式给 SSH_MCP_CONFIG 时的兜底）：
+ *   1) 可执行文件同级的 config.local.json —— 单文件产物的标准放法（exe 旁放配置，客户端零 env）；
+ *      源码直跑时 execPath 是 bun 本身，其目录一般没有该文件，自然落到下一条；
+ *   2) 进程 cwd 下的 config.local.json —— 源码直跑场景。
+ * 都不存在时返回 cwd 那条路径：不是错误，自省模式据此报 local_config_exists=false。
+ */
+export function localConfigCandidates(): string[] {
+  const explicit = process.env.SSH_MCP_CONFIG;
+  if (explicit) return [explicit];
+  return [path.join(path.dirname(process.execPath), "config.local.json"), path.join(process.cwd(), "config.local.json")];
+}
+
 export function localConfigPath(): string {
-  return process.env.SSH_MCP_CONFIG ?? path.join(process.cwd(), "config.local.json");
+  const candidates = localConfigCandidates();
+  return candidates.find((p) => fs.existsSync(p)) ?? candidates[candidates.length - 1]!;
 }
 
 export function loadLocalConfig(): LocalConfigFile {

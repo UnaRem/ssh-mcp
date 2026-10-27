@@ -6,7 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { ResolveError, isIpLiteral, listHosts, resolveTarget } from "../src/config.ts";
+import {
+  localConfigCandidates,
+  localConfigPath,
+  loadLocalConfig,
+  ResolveError,
+  isIpLiteral,
+  listHosts,
+  resolveTarget,
+} from "../src/config.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ssh-mcp-cfg-"));
 const savedEnv: Record<string, string | undefined> = {};
@@ -169,5 +177,60 @@ describe("本地 profile 与凭据来源", () => {
     expect(h.aliases.find((a) => a.name === "los")!.source).toEqual(["ssh_config", "config.local.json"]);
     expect(h.aliases.find((a) => a.name === "los")!.user).toBe("admin");
     expect(h.aliases.find((a) => a.name === "lan")!.hostname).toBe("192.168.1.21");
+  });
+});
+
+describe("配置文件的发现顺序：显式 env > 可执行文件同级 > cwd", () => {
+  // 「可执行文件同级」对产物（exe 旁边的 config.local.json）是新路径；
+  // 源码直跑时 execPath 是 bun，其目录没有该文件，自然落到 cwd——两条都要可断言。
+  const mkEmpty = () => fs.mkdtempSync(path.join(dir, "cwd-empty-"));
+  const withCfg = fs.mkdtempSync(path.join(dir, "cwd-cfg-"));
+  fs.writeFileSync(
+    path.join(withCfg, "config.local.json"),
+    JSON.stringify({ hosts: { probehost: { hostname: "192.0.2.7", user: "u" } } }),
+  );
+
+  function withCwd(p: string, fn: () => void): void {
+    const prev = process.cwd();
+    process.chdir(p);
+    try {
+      fn();
+    } finally {
+      process.chdir(prev);
+    }
+  }
+
+  test("显式 SSH_MCP_CONFIG 优先，且作为唯一候选", () => {
+    const p = writeNamed("explicit.json", JSON.stringify({ hosts: {} }));
+    useConfigs(null, p);
+    expect(localConfigCandidates()).toEqual([p]);
+    expect(localConfigPath()).toBe(p);
+  });
+
+  test("不设 env：候选顺序是可执行文件同级目录，其次 cwd", () => {
+    useConfigs(null, null);
+    withCwd(mkEmpty(), () => {
+      expect(localConfigCandidates()).toEqual([
+        path.join(path.dirname(process.execPath), "config.local.json"),
+        path.join(process.cwd(), "config.local.json"),
+      ]);
+    });
+  });
+
+  test("不设 env：两处都没有配置时报告 cwd 路径（不是错误，自省据此报 exists=false）", () => {
+    useConfigs(null, null);
+    withCwd(mkEmpty(), () => {
+      expect(localConfigPath()).toBe(path.join(process.cwd(), "config.local.json"));
+      expect(loadLocalConfig()).toEqual({ hosts: {} });
+    });
+  });
+
+  test("不设 env：cwd 旁的 config.local.json 兜底生效（源码直跑场景不变）", () => {
+    useConfigs(null, null);
+    withCwd(withCfg, () => {
+      expect(localConfigPath()).toBe(path.join(withCfg, "config.local.json"));
+      // 发现机制要真的产出可用的 profile，不只是路径字符串对
+      expect(listHosts().aliases.map((a) => a.name)).toContain("probehost");
+    });
   });
 });
