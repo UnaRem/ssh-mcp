@@ -123,6 +123,8 @@ export interface BatchResult {
   truncated: boolean;
   /** 提前停止的原因（stop_on_error / 单步超时 / 步数上限） */
   stopped_at?: string;
+  /** 提前停止时怎么办：把「剩下的没执行、已产生的输出在哪、怎么控制时长」说清楚 */
+  hint?: string;
   /** 因步数上限被丢弃的步数 */
   dropped?: number;
 }

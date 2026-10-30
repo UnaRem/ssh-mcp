@@ -116,6 +116,28 @@ describe("ShellSession", () => {
     s.close();
   });
 
+  test("超时也要带回超时前已产生的输出（不足一帧预留的字节不能被扣住）", async () => {
+    const { client } = makeFakeClient();
+    const s = await ShellSession.open("s8", fakeTarget(), client);
+    const r = await s.exec("#hang BEFORE-OUT", { timeoutMs: 250 });
+    expect(r.timed_out).toBe(true);
+    // 回归点：drain() 末尾的 RESERVED 字节永不交付，短输出不 flush 就必然是空串（实测部署版就是空串）
+    expect(r.stdout).toContain("BEFORE-OUT");
+    expect(r.stdout_bytes).toBeGreaterThanOrEqual("BEFORE-OUT\n".length);
+    // 桥只是停止等待：不能声称远端命令被终止（实测它会作为孤儿进程跑完）
+    expect(r.error).toContain("不会终止远端命令");
+    s.close();
+  });
+
+  test("通道结束（shell 退出）同样不丢已到达的输出", async () => {
+    const { client } = makeFakeClient();
+    const s = await ShellSession.open("s9", fakeTarget(), client);
+    const r = await s.exec("#die AFTER-DIE");
+    expect(r.exit_code).toBe(null);
+    expect(r.stdout).toContain("AFTER-DIE");
+    s.close();
+  });
+
   test("输出预算：截断标记与真实总字节/行数", async () => {
     const { client } = makeFakeClient();
     const s = await ShellSession.open("s7", fakeTarget(), client);

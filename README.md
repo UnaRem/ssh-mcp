@@ -46,7 +46,7 @@ bun install          # ssh2 的 cpu-features 原生模块会编译（约 30s）
 ```bash
 bun run build
 cp dist/ssh-mcp.exe ~/tools/
-bun run dist-verify                    # 对安装位跑 12 项端到端验收
+bun run dist-verify                    # 对安装位跑 13 项端到端验收
 ```
 
 > 覆盖前先退出 MCP 客户端：客户端正持着这个 exe 时 Windows 不让写（`Device or resource busy`）。
@@ -248,7 +248,10 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 
 ### 行为保证
 
-- `timeout_ms` 到期 → `timed_out: true`，server 与连接都还活着；
+- `timeout_ms` 到期 → `timed_out: true`，server 与连接都还活着；**超时之前产生的输出照常带回**（在 `stdout` 里），
+  并回报 `stdout_bytes`/`stdout_lines`；
+- 超时只是**停止等待**：桥不会终止远端命令（实测 2026-10-30，被放弃的命令会在远端继续跑完）。
+  要限制时长就在命令里写 `timeout <秒> <命令>`，长任务用 `nohup ... >/dev/null 2>&1 &`，要等更久就传更大的 `timeout_ms`；
 - 输出超预算 → `truncated: true`，并回报真实总量；想少看点就在命令里用 `head`/`tail`/`sed`；
 - 一次性调用默认给命令补 `< /dev/null`（`cat` 不会挂死）；管道命令不补，以免改变语义；
 - 引号未闭合等语法错误先过远端 `bash -n` 预检，返回「命令未执行」+ bash 的报错，命令不会半执行；
@@ -273,9 +276,9 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 ```bash
 bun run lint                                     # = bunx tsc --noEmit
 bun test                                         # 离线测试，不需要网络（fake 替身 + 进程内真 SSH 服务器）
-bun run live                                     # 对真实主机 25 项端到端验收，读 config.local.json
+bun run live                                     # 对真实主机 26 项端到端验收，读 config.local.json
 bun run build                                    # 单文件产物 dist/ssh-mcp.exe
-bun run dist-verify                              # 对产物 12 项验收，默认 ~/tools/ssh-mcp.exe
+bun run dist-verify                              # 对产物 13 项验收，默认 ~/tools/ssh-mcp.exe
 bun run dist-verify dist/ssh-mcp.exe --offline   # 只跑协议层 6 项（CI 用，远端相关记 SKIP）
 ```
 

@@ -285,6 +285,30 @@ async function main() {
     return `${ms}ms 返回 timed_out=true，随后命令正常`;
   });
 
+  await check("A9 超时结果自解释：带出超时前的输出，且不终止远端命令", async () => {
+    // 回归点：drain() 为凑齐哨兵帧预留的尾部字节（104 B）以前从不交付，
+    // 短输出的命令超时后 stdout 必然是空串（实测 2026-10-30 部署版）。
+    const marker = `${remoteDir}/timeout-keep.flag`;
+    const t0 = Date.now();
+    const p = await call2(cl, "ssh_run", {
+      host: HOST,
+      command: `echo BEFORE-OUT; sleep 5; touch ${marker}; echo AFTER-OUT`,
+      timeout_ms: 1200,
+    });
+    const ms = Date.now() - t0;
+    assert.equal(p.timed_out, true);
+    assert.match(String(p.stdout), /BEFORE-OUT/, "超时前产生的输出没带回来");
+    assert.doesNotMatch(String(p.stdout), /AFTER-OUT/, "还没跑到的部分不应出现");
+    assert.ok(p.stdout_bytes >= "BEFORE-OUT\n".length, "stdout_bytes 应把已产生的输出计入");
+    assert.match(String(p.error), /不会终止远端命令/, "缺少「桥只是停止等待」这条说明");
+    assert.match(String(p.error), /nohup/);
+    // 文案里那句「不会终止」是实测事实，这里复查一次：等远端那条命令自己跑完并落下标记文件
+    await Bun.sleep(4500);
+    const probe = await call2(cl, "ssh_run", { host: HOST, command: `test -e ${marker} && echo 仍在运行 || echo 已被终止` });
+    assert.equal(String(probe.stdout).trim(), "仍在运行", "文案说不会终止，实际却被终止了（OpenSSH 行为变了，文案要改）");
+    return `${ms}ms 返回 timed_out=true 且 stdout 含 BEFORE-OUT；5s 后标记文件已生成 → 「不会终止远端命令」成立`;
+  });
+
   await check("A9 输出预算：truncated=true 并回报真实总量", async () => {
     const size = await call2(cl, "ssh_run", { host: HOST, command: "head -c 4096 /dev/zero | tr '\\0' 'a' | wc -c" });
     assert.equal(String(size.stdout).trim(), "4096");

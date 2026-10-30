@@ -27,8 +27,8 @@ src/
   types.ts       共用类型
 docs/domain.md   领域模型：判据（桥只补 shell 给不了的）、统一语言、不变量、错误码语义
 test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约
-scripts/live-verify.ts  真实主机端到端验收（25 项），读 config.local.json
-scripts/dist-verify.ts  单文件产物的验收（12 项；--offline 只跑协议层 6 项，给 CI 用）
+scripts/live-verify.ts  真实主机端到端验收（26 项），读 config.local.json
+scripts/dist-verify.ts  单文件产物的验收（13 项；--offline 只跑协议层 6 项，给 CI 用）
 .github/workflows/release.yml  打 tag → 编译 windows-x64 产物 → 离线自检 → zip 附到 Release
 LICENSE          MIT
 .pi/goal/        目标契约；.pi/work/ 是临时探针，不入版本管理
@@ -51,7 +51,7 @@ LICENSE          MIT
 | `bun start` | `bun run src/index.ts` | 起 MCP server（stdio） |
 | `bun run live` | `bun run scripts/live-verify.ts` | 对真实主机跑端到端验收 |
 | `bun run build` | `bun build --compile src/index.ts --outfile dist/ssh-mcp.exe` | 单文件产物（`dist/` 不入库） |
-| `bun run dist-verify` | `bun run scripts/dist-verify.ts` | 对产物跑 12 项验收，默认 `~/tools/ssh-mcp.exe`，可传路径 |
+| `bun run dist-verify` | `bun run scripts/dist-verify.ts` | 对产物跑 13 项验收，默认 `~/tools/ssh-mcp.exe`，可传路径 |
 | `bun run dist-verify dist/ssh-mcp.exe --offline` | 同上，只跑协议层 6 项 | CI 用（没有内网验收主机），远端相关项记 SKIP |
 
 - 单跑某个文件：`bun test test/session.test.ts`。测试里 `beforeAll/afterAll` 是 Bun 的写法，**没有** `before/after`。
@@ -61,7 +61,7 @@ LICENSE          MIT
   子进程走 stdio，断言属性集合恰好等于声明值（多一个参数即失败），并断言每个参数自带文档与 ASCII `Keywords:`。
 - 契约是 TDD 资产：改对外面先改 `test/contract.test.ts`（红），再实现（绿）。`docs/domain.md` 与它是同一结论的两处，
   必须同步改；只改一边会被下一个改动打回。
-- 只改文档不必跑 live；改了 `src/**` 的远端行为，收官要跑一次 `bun run live`（25 项，全 PASS 才算完）。
+- 只改文档不必跑 live；改了 `src/**` 的远端行为，收官要跑一次 `bun run live`（26 项，全 PASS 才算完）。
 - 写验收断言前先读实现返回的真实字段名（例如 `sftpPut` 返回 `bytes_match`，没有 `overwritten`），别凭空造字段。
 
 ## 交付入口
@@ -71,7 +71,7 @@ LICENSE          MIT
 1. **源码直跑**：客户端用绝对路径 `bun run <abs>/src/index.ts` 启动（README「接入 MCP 客户端」的配置片段）。
 2. **单文件产物**：`bun run build` → `dist/ssh-mcp.exe`（约 96 MiB，含 bun 运行时），装到 `~/tools/ssh-mcp.exe`，
    客户端 `command` 直接指向它，对端不需要装 bun（README「安装与运行」）。产物不入版本管理；
-   更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（12 项，全 PASS 才算完）。
+   更新流程固定为 `build` → 覆盖安装位置 → `bun run dist-verify`（13 项，全 PASS 才算完）。
    配置文件放 exe 同级会被自动找到（客户端零 env）；三处都没有则首启自动生成模板（只创建不覆盖，TOFU 同款）。
    放别处靠 `SSH_MCP_CONFIG` 绝对路径。源码直跑没有「exe 同级」可言（execPath 是 bun），此时必须显式给，
    cwd 兜底在客户端不可靠。
@@ -79,7 +79,7 @@ LICENSE          MIT
    从仓库那份复制）；仓库 `config.local.json` 仍由 live/dist-verify 使用。**两份配置，改一处记得同步另一处**；
    配置每次调用都重读，改完即时生效、不用重启客户端。
 
-验收入口两个：`scripts/live-verify.ts`（源码版 25 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
+验收入口两个：`scripts/live-verify.ts`（源码版 26 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
 不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 12 项，重点看 `--compile` 后依赖是否真的带着走）。
 
 **自动发布（只 windows-x64，push 驱动）**：发版 = 把 `package.json` 的 `version` 改一行 → push 到 main →
@@ -118,6 +118,14 @@ LICENSE          MIT
   （`syntaxCheck` 曾因此每次都等满 8s）。
 - 哨兵行的 `$?`/`$PWD` 必须用双引号让远端 shell 展开；单引号会让退出码和 cwd 变成字面量。
 - `guardStdin()` 不能给管道补 `< /dev/null`（会静默改变语义），只看最后一段命令。
+- `drain()` 为凑齐哨兵帧预留的 `RESERVED`（104 B）只在「等到帧」时交付。超时或通道关闭时不 flush，
+  就会吞掉尾部不足一帧的全部输出——`echo BEFORE-OUT; sleep 40` 超时后 `stdout` 必然是空串
+  （实测 2026-10-30，部署版）。放弃这条管道的两处（`run()` 的超时分支、`onEnd`）都要 `flushPendingTo()`。
+- 关闭 SSH 通道**不会**终止远端命令（实测 2026-10-30，OpenSSH 9.6p1：`sleep 12; touch f` 在 2s 超时后被放弃，
+  文件仍在约 12s 后创建）。所以超时文案不能说「已终止」，要说「只是停止等待」，并给原生做法：
+  命令里 `timeout <秒> …`、`nohup … &`、显式 `timeout_ms`。默认超时值不改（调高会让真卡住的命令多等几倍才失败）。
+- 默认超时常量曾在 `tool.ts` 与 `session.ts` 各写一份同名值；现在 `session.ts` import `tool.ts` 的
+  `DEFAULT_EXEC_TIMEOUT_MS`，只有一处（`result.ts` 的 `DEFAULT_MAX_OUTPUT_BYTES` 同理）。
 - OpenSSH 的 known_hosts 语义：裸 host 条目对所有端口生效，`[host]:port` 才限定端口。
 - OpenSSH SFTP 起始目录是用户家目录，所以 `~` 用 `realpath(".")` 展开；`mkdir` 对已存在目录返回笼统的 `SFTP code 4`，
   要 `stat` 一下才知道是「已存在」。

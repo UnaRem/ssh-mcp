@@ -71,7 +71,11 @@ export const timeoutArg = z
   .min(100)
   .max(MAX_TIMEOUT_MS)
   .optional()
-  .describe(`命令超时毫秒，默认 ${DEFAULT_EXEC_TIMEOUT_MS}。超时是数据：结果里 timed_out=true，不算工具失败。`);
+  .describe(
+    `命令超时毫秒，默认 ${DEFAULT_EXEC_TIMEOUT_MS}（上限 ${MAX_TIMEOUT_MS}）。超时是数据：结果里 timed_out=true，不算工具失败，` +
+      "并且会带回超时之前已经产生的输出。注意桥不会终止远端命令——它只是停止等待，命令可能仍在远端跑；" +
+      "要限制时长就在命令里写 timeout <秒> <命令>，长任务用 nohup ... >/dev/null 2>&1 &。",
+  );
 
 export const budgetArg = z
   .number()

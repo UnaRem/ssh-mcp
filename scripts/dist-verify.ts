@@ -10,7 +10,7 @@
  * 构建期不报错不代表运行期没问题——原生模块加载失败会退回 JS crypto（变慢但不错），
  * 而模块漏打则可能直接起不来。所以产物必须走一遍真实 stdio 握手 + tools/call。
  *
- * 它验的是「产物与源码行为一致」这一层，不替代 bun run live（后者 25 项，覆盖契约细节）。
+ * 它验的是「产物与源码行为一致」这一层，不替代 bun run live（后者 26 项，覆盖契约细节）。
  * 退出码：全部通过 0，任一失败 1。
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -160,6 +160,16 @@ async function main() {
       assert.equal(c.p.ok, false);
       assert.equal(c.p.exit_code, 7);
       return "exit_code=7 顶层 ok=false";
+    });
+
+    await checkRemote("超时也带出已产生的输出（帧预留区的字节不被吞掉）", async () => {
+      const c = await call(srv.client, "ssh_run", { host: HOST, command: "echo BEFORE-OUT; sleep 6; echo AFTER-OUT", timeout_ms: 1200 });
+      assert.equal(c.isError, false, "超时应当是数据");
+      assert.equal(c.p.timed_out, true);
+      assert.match(String(c.p.stdout), /BEFORE-OUT/, "产物里超时前的输出丢了（源码版已修，产物没带上）");
+      assert.doesNotMatch(String(c.p.stdout), /AFTER-OUT/);
+      assert.match(String(c.p.error), /不会终止远端命令/, "超时文案缺少「只是停止等待」这条");
+      return `timed_out=true 且 stdout 含 BEFORE-OUT（${c.p.stdout_bytes} 字节），文案说明不会终止远端命令`;
     });
 
     await checkRemote("连续会话：跨调用保持 cwd，close 干净", async () => {

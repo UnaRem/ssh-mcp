@@ -10,6 +10,8 @@ import type { Client, ClientChannel } from "ssh2";
 
 import { execAttached, type HostKeyInfo } from "./backend.ts";
 import { clampBytes, DEFAULT_MAX_OUTPUT_BYTES, OutputSink } from "./result.ts";
+// 默认超时只有一个来源：tool.ts（两处同名常量迟早会漂移）
+import { DEFAULT_EXEC_TIMEOUT_MS, MAX_TIMEOUT_MS } from "./tool.ts";
 import type { ExecResult, ResolvedTarget } from "./types.ts";
 
 const SEP = 0x01;
@@ -18,7 +20,6 @@ const MARKER = Buffer.from(`\x01${TAG}\x01`, "utf8");
 /** 帧未完整时最多预留多少字节不交给 sink（帧头 + 可能的长字段） */
 const RESERVED = MARKER.length + 96;
 
-const DEFAULT_EXEC_TIMEOUT = 30_000;
 const DEFAULT_IDLE_TTL = 180_000;
 
 export function newNonce(): string {
@@ -150,6 +151,21 @@ export function looksSyntacticallySuspicious(command: string): string | null {
   return null;
 }
 
+/**
+ * 超时结果里「怎么把时长变成可控的」这一段。措辞只写一处，exec 与 batch 共用。
+ * 「不会终止远端命令」不是推测：实测 2026-10-30 对 OpenSSH 9.6p1，
+ * 一条 `sleep 12; touch f` 在 2s 超时（关闭通道）之后仍然跑完并创建了文件。
+ * 要真的限制时长，原生做法是在命令里用 coreutils 的 timeout，或自己 kill/pkill。
+ */
+export function timeoutNote(timeoutMs: number): string {
+  const sec = Math.max(1, Math.round(timeoutMs / 1000));
+  return (
+    "注意：关闭通道不会终止远端命令——它可能仍在远端继续运行（实测 2026-10-30）。" +
+    `要限制时长就在命令里写 timeout ${sec} <命令>（或之后 kill/pkill 掉它）；` +
+    `要后台执行请用 nohup ... >/dev/null 2>&1 &；要等更久就显式传更大的 timeout_ms（上限 ${MAX_TIMEOUT_MS}）。`
+  );
+}
+
 interface Frame {
   nonce: string;
   exit: number | null;
@@ -224,8 +240,21 @@ export class ShellPipe {
       const a = this.active;
       this.active = null;
       this.needsRestart = true;
+      // 通道已经不会再送帧来了：把剩下的字节当数据交出，否则短输出必然看不见
+      this.flushPendingTo(a.out);
       a.resolve({ exit_code: null, out: a.out, duration_ms: Date.now() - a.start });
     }
+  }
+
+  /**
+   * 把「为凑齐哨兵帧而预留」的字节也交给 sink。只在放弃这条管道时用（超时、通道结束）。
+   * 不这样做就会吞掉尾部不足 RESERVED（104 B）的输出：`echo BEFORE-OUT; sleep 40` 超时后
+   * stdout 必然是空串（实测 2026-10-30，部署版就是这个现象）。
+   */
+  private flushPendingTo(sink: OutputSink): void {
+    if (this.pending.length === 0) return;
+    sink.push(this.pending);
+    this.pending = Buffer.alloc(0);
   }
 
   private onData(chunk: Buffer): void {
@@ -281,7 +310,13 @@ export class ShellPipe {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (!this.active) return;
+        const a = this.active;
         this.active = null;
+        // 先交付已到达的字节再判定超时：否则这一帧预留区里的输出永远进不了 stdout
+        this.flushPendingTo(a.out);
+        // 保留「换一条 shell」这个安全行为。注意：关通道不等于终止远端命令
+        // （实测 2026-10-30，OpenSSH 9.6p1：被放弃的命令作为孤儿进程继续跑完），
+        // 这条事实写进 exec() 的 error 文案，不在这里下结论。
         this.needsRestart = true;
         resolve({ exit_code: null, out, duration_ms: Date.now() - start, timed_out: true });
       }, timeoutMs);
@@ -421,10 +456,10 @@ export class ShellSession {
     const session = new ShellSession(id, target, conn, pipe, shell, "");
     session.maxOutputBytes = maxOut;
     // 探针：拿到初始 cwd，顺便验证管道可用
-    const probe = await session.pipe.run("pwd", opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT);
+    const probe = await session.pipe.run("pwd", opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS);
     session.cwd = probe.cwd ?? "";
     if (opts.cwd) {
-      const cd = await session.pipe.run(`cd ${quoteForSh(opts.cwd)}`, opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT);
+      const cd = await session.pipe.run(`cd ${quoteForSh(opts.cwd)}`, opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS);
       if (cd.exit_code !== 0) {
         const errText = session.pipe.currentStderr().text();
         session.close();
@@ -442,7 +477,7 @@ export class ShellSession {
   /** 执行一条命令。语法可疑时先做 bash -n 预检，预检失败则不污染会话。 */
   async exec(command: string, opts: { timeoutMs?: number; maxOutputBytes?: number; keepStdin?: boolean } = {}): Promise<ExecResult> {
     const start = Date.now();
-    const timeoutMs = opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
     const syntax = looksSyntacticallySuspicious(command);
 
     if (syntax) {
@@ -497,8 +532,10 @@ export class ShellSession {
         background_suspect: true,
         session_restarted: true,
         error:
-          `等待 ${timeoutMs}ms 未收到命令结束标记。可能原因：后台进程占住 stdout/stderr、命令读取了 stdin。` +
-          "会话已重开（cwd 与 export 已清空）。若要读文件请用 cat < file；要后台执行请用 nohup ... >/dev/null 2>&1 &",
+          `等待 ${timeoutMs}ms 未收到命令结束标记，已停止等待并关闭该通道；stdout 里是超时之前实际产生的输出。` +
+          `可能原因：后台进程占住 stdout/stderr、命令读取了 stdin、或命令本来就要跑这么久。` +
+          timeoutNote(timeoutMs) +
+          "会话已重开（cwd 与 export 已清空）。若要读文件请用 cat < file。",
         session_id: this.id,
         cwd: this.cwd,
         syntax_check: syntax ? "passed" : undefined,
@@ -544,7 +581,7 @@ export class ShellSession {
     if (!pipe) throw new Error("无法重开远端 shell");
     this.pipe = pipe;
     this.shell = shell;
-    const probe = await this.pipe.run("pwd", DEFAULT_EXEC_TIMEOUT);
+    const probe = await this.pipe.run("pwd", DEFAULT_EXEC_TIMEOUT_MS);
     this.cwd = probe.cwd ?? "";
     this.needsRestartFlagOff();
   }

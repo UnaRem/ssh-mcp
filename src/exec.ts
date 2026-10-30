@@ -6,7 +6,8 @@
  */
 import type { Client } from "ssh2";
 
-import { newNonce, ShellSession } from "./session.ts";
+import { newNonce, ShellSession, timeoutNote } from "./session.ts";
+import { clampTimeout, DEFAULT_EXEC_TIMEOUT_MS } from "./tool.ts";
 import type { BatchResult, BatchStep, ExecResult, ResolvedTarget } from "./types.ts";
 
 export interface RunOptions {
@@ -79,26 +80,34 @@ export async function runBatch(
   const maxSteps = Math.max(1, opts.maxSteps ?? DEFAULT_MAX_STEPS);
   const list = commands.slice(0, maxSteps);
   const started = Date.now();
+  // 把默认超时显式解析出来：hint 里要如实写出这次实际用的时长
+  const timeoutMs = clampTimeout(opts.timeoutMs, DEFAULT_EXEC_TIMEOUT_MS);
 
   const session = await ShellSession.open(`${ONE_SHOT_PREFIX}batch_${newNonce()}`, target, conn, {
     maxOutputBytes: opts.maxOutputBytes,
-    timeoutMs: opts.timeoutMs,
+    timeoutMs,
   });
 
   const steps: BatchStep[] = [];
   let stopped_at: string | undefined;
+  let hint: string | undefined;
   let truncated = false;
 
   try {
     for (let i = 0; i < list.length; i++) {
       const command = list[i]!;
-      const r = await session.exec(command, { timeoutMs: opts.timeoutMs, keepStdin: opts.keepStdin });
+      const r = await session.exec(command, { timeoutMs, keepStdin: opts.keepStdin });
       const step = toStep(i, command, r);
       if (step.truncated) truncated = true;
       steps.push(step);
 
       if (r.timed_out) {
         stopped_at = `step_${i}_timeout`;
+        // 批次停在超时这一步：调用方需要知道剩下的命令没跑、以及这一步的输出已经在 steps[i].stdout 里
+        hint =
+          `第 ${i} 步（${command}）等待 ${timeoutMs}ms 未结束，已停止等待；` +
+          `它到超时为止产生的输出在该步的 stdout 里，第 ${i + 1} 步起共 ${list.length - i - 1} 步未执行。` +
+          timeoutNote(timeoutMs);
         break;
       }
       if (opts.stopOnError === true && r.exit_code !== 0) {
@@ -123,6 +132,7 @@ export async function runBatch(
     connection_reused: true,
     truncated,
     ...(stopped_at !== undefined ? { stopped_at } : {}),
+    ...(hint !== undefined ? { hint } : {}),
     ...(dropped > 0 ? { dropped } : {}),
   };
 }

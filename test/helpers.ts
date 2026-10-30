@@ -56,13 +56,23 @@ function stripStdinGuard(command: string): string {
 }
 
 /** 一个极小的假 shell：实现 cd / pwd / echo / exit，另有剧本关键字 */
-function handle(state: FakeShellState, command: string): { stdout: string; stderr: string; exit: number; close?: boolean } {
+function handle(
+  state: FakeShellState,
+  command: string,
+): { stdout: string; stderr: string; exit: number; close?: boolean; hang?: boolean } {
   const cmd = stripStdinGuard(command);
   if (!cmd) return { stdout: "", stderr: "", exit: 0 };
 
-  // 剧本触发器：#hang 不回哨兵（模拟后台进程占住 fd），#die 让 shell 退出
-  if (cmd.startsWith("#hang")) return { stdout: "", stderr: "", exit: 0, close: false };
-  if (cmd.startsWith("#die")) return { stdout: "", stderr: "", exit: 0, close: true };
+  // 剧本触发器：#hang 不回哨兵（模拟后台进程占住 fd），#die 让 shell 退出。
+  // 两者都允许带一段输出（`#hang BEFORE-OUT`），用来验证「超时/通道关闭也要带回已产生的输出」。
+  if (cmd.startsWith("#hang")) {
+    const rest = cmd.slice("#hang".length).trim();
+    return { stdout: rest ? `${rest}\n` : "", stderr: "", exit: 0, hang: true };
+  }
+  if (cmd.startsWith("#die")) {
+    const rest = cmd.slice("#die".length).trim();
+    return { stdout: rest ? `${rest}\n` : "", stderr: "", exit: 0, close: true };
+  }
 
   const cd = /^cd(?:\s+(\S+))?$/.exec(cmd);
   if (cd) {
@@ -151,10 +161,10 @@ function makeChannel(state: FakeShellState, mode: "shell" | "bash-n", loginDir: 
       const nonce = sentinelNonce(line);
       state.commands++;
       state.calls.push({ command: cmd, raw: cmd + "\n" + line });
-      if (cmd.startsWith("#hang")) continue; // 故意不回哨兵 -> 触发超时
       const r = handle(state, cmd);
       if (r.stdout) out.push(Buffer.from(r.stdout, "utf8"));
       if (r.stderr) err.push(Buffer.from(r.stderr, "utf8"));
+      if (r.hang) continue; // 输出已到达但不回哨兵 -> 走调用方的超时分支
       if (r.close) {
         // shell 直接退出：不写哨兵，让调用方走「未能确定退出码」分支
         setImmediate(() => {

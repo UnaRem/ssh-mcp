@@ -78,6 +78,18 @@ describe("runOnce（ssh_exec 的执行核）", () => {
     expect(Date.now() - started).toBeLessThan(4000);
   });
 
+  test("超时结果自解释：带回超时前的部分输出 + 说明远端命令不会被终止", async () => {
+    const { client } = makeFakeClient();
+    // 用户给的复现，换成离线替身：先输出一行，再挂住不回哨兵
+    const r = await runOnce(fakeTarget(), client, "#hang BEFORE-OUT", { timeoutMs: 300 });
+    expect(r.timed_out).toBe(true);
+    expect(r.stdout).toContain("BEFORE-OUT");
+    expect(r.stdout).not.toContain("AFTER-OUT");
+    expect(String(r.error)).toContain("不会终止远端命令");
+    expect(String(r.error)).toContain("nohup");
+    expect(String(r.error)).toContain("timeout_ms");
+  });
+
   test("语法可疑的命令先做 bash -n 预检，未执行且不改动会话", async () => {
     const { client, state } = makeFakeClient();
     const r = await runOnce(fakeTarget(), client, "echo '未闭合");
@@ -135,6 +147,20 @@ describe("runBatch（ssh_batch 的执行核）", () => {
     expect(r.steps[0]?.timed_out).toBe(true);
     expect(r.stopped_at).toBe("step_0_timeout");
     expect(state.commands).toBe(3); // 探针 + 挂住的命令 + 重开会话的探针
+  });
+
+  test("批次因超时停止时带 hint：停在哪一步、命令不会被终止、怎么控制时长", async () => {
+    const { client } = makeFakeClient();
+    const r = await runBatch(fakeTarget(), client, ["#hang AFTER-HANG", "echo after"], { timeoutMs: 300 });
+    expect(r.stopped_at).toBe("step_0_timeout");
+    // 已产生的输出在该步的 stdout 里，不因为是超时就被丢掉
+    expect(r.steps[0]?.stdout).toContain("AFTER-HANG");
+    expect(r.steps[1]).toBeUndefined();
+    const hint = String(r.hint);
+    expect(hint).toContain("第 0 步");
+    expect(hint).toContain("不会终止远端命令");
+    expect(hint).toContain("nohup");
+    expect(hint).toContain("timeout_ms");
   });
 
   test("超过 maxSteps 的步数被丢弃：回报 dropped 且不报 ok", async () => {
