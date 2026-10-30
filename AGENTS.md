@@ -148,6 +148,10 @@ LICENSE          MIT
   改配置只重建部分目录的连接，已建立的那条连名字带行为都停在旧版本（2026-10-27 实测：旧连接还在回答重构前的 14 个工具，
   返回体没有新版的 `mode`/`hint`）。要刷新就重建该目录的实例，或 `opencode service restart`
   （连接活在常驻的 `serve --service` 进程里，只关 TUI 客户端无效；`opencode mcp` 没有 reload 子命令）。
+  **单独 kill 掉 server 进程不会让它自动重连**（2026-10-30 实测）：`opencode mcp list` 会停在
+  `✗ ssh-tool failed: Connection closed: MCP server process exited with code 1`，之后 agent 侧调不到该工具；
+  重连要靠客户端重建那条连接（或 `opencode service restart`），别把「kill 进程」当热重载。
+  重连成功后 `opencode mcp list` 回到 `✓ ssh-tool connected`，新进程就是磁盘上那份 exe（2026-10-30 复查）。
   自检：`ssh_run({})` 的返回里带 `mode:"inventory"` 与 `hint` 才是新工具面。
   各客户端的具体接入配置写在 README「接入 MCP 客户端」一节——那是使用侧的配置，不是本项目的约束，改客户端配置不动本仓库的代码与测试。
 - `mcp.registerTool` 从对象上取下来再调用必须 `.bind(mcp)`，否则 `this._registeredTools` 是 undefined，
@@ -177,6 +181,9 @@ LICENSE          MIT
   原因未查（怀疑新落地的 exe 被首次扫描拦截），别把它当成契约回归。
 - 覆盖正在运行的产物会失败（2026-10-27 实测 `cp: ... Device or resource busy`）：MCP 客户端持着 `~/tools/ssh-mcp.exe` 时
   Windows 不让覆盖。更新顺序固定为「退出客户端 → `bun run build` → 覆盖 → 起客户端」；开发期想避免，就把客户端指向源码。
+  不必退出客户端的做法（2026-10-30 实测）：`bun run build` → `taskkill //F //IM ssh-mcp.exe`（解锁）→ `cp` →
+  `bun run dist-verify`（它自己起进程，不依赖客户端那条连接，13 项照跑）→ 再让客户端重连。
+  代价就是上一条：那条 MCP 连接停在 failed，要重连才回到新进程。
 
 ## 环境事实的维护
 
