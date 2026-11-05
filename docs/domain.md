@@ -54,8 +54,18 @@
    已到达的输出必须原样带回（放弃这条管道时要 flush 帧预留区，否则短命令超时后 `stdout` 必为空——实测 2026-10-30）；
    说明桥**只是停止等待**，关闭通道不会终止远端命令（实测 2026-10-30，OpenSSH 9.6p1：被放弃的 `sleep 12; touch f`
    仍跑完并创建了文件），所以不许写「命令已终止」；
-   并给出把时长变可控的原生做法（命令里 `timeout <秒> …`、`nohup … &`、显式 `timeout_ms`）。
-   锁它的测试：`test/session.test.ts`、`test/exec.test.ts`、`scripts/live-verify.ts` 的 A9。
+   并给出把时长变可控的原生做法（命令里 `timeout <秒> …`、`nohup … &` 起后台再轮询），
+   且不许留「把 timeout_ms 调大」这条退路。
+   锁它的测试：`test/session.test.ts`、`test/exec.test.ts`、`test/timeouts.test.ts`、`scripts/live-verify.ts` 的 A9。
+10. **超时的默认值就是上限（5000ms），这条参数只能调小。** 依据是实测 2026-11-05 的 841 次真实调用：
+   83% 本来就在 5s 内完成（p50 0.18s），超过 5s 的 140 次里 68 次是 `sleep`/轮询等待，属于用法错而不是活真的需要那么久。
+   所以 5s 回不来的一律起后台再轮询，桥不为此等。
+   超出上限的值只截不拒：schema 的 `maximum` 由 SDK 在进 handler 之前抛，返回没有 `structuredContent`、
+   命令也不执行（历史里约 300 次传了 30s 以上，拒绝等于整段作废）；截断必须在结果里可见
+   （`timeout_ms` 生效值 + `timeout_ms_requested` + `timeout_capped`）。
+   命令里出现 `sleep N`（N≥3）时结果带 `hint` 指向起后台的写法：只提示，不改命令。
+11. **预检的等待与命令上限解耦。** `bash -n` 实测几毫秒返回，用固定的 `SYNTAX_CHECK_TIMEOUT_MS`（1.5s）。
+   写成 `Math.min(命令上限, …)` 的话，命令上限降到 5s 后，慢主机上一次探测延迟就会报「预检超时」这种假失败（实测 2026-11-05）。
 
 ## 4. 分层与边界
 

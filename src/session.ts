@@ -162,7 +162,8 @@ export function timeoutNote(timeoutMs: number): string {
   return (
     "注意：关闭通道不会终止远端命令——它可能仍在远端继续运行（实测 2026-10-30）。" +
     `要限制时长就在命令里写 timeout ${sec} <命令>（或之后 kill/pkill 掉它）；` +
-    `要后台执行请用 nohup ... >/dev/null 2>&1 &；要等更久就显式传更大的 timeout_ms（上限 ${MAX_TIMEOUT_MS}）。`
+    "要跑得更久就起后台再轮询：nohup 长命令 > /path/job.log 2>&1 & echo $!，之后 tail -n 50 /path/job.log 或 kill -0 <pid>。" +
+    `不要用 sleep 占住这次调用：timeout_ms 的上限就是默认值 ${MAX_TIMEOUT_MS}，没有「等更久」这个选项。`
   );
 }
 
@@ -347,8 +348,16 @@ export class ShellPipe {
   }
 }
 
+/**
+ * 预检自己的等待上限，与命令的 timeout_ms 解耦。
+ * 实测远端 `bash -n` 在几毫秒内就 exit，1.5s 已经宽到几十倍余量；
+ * 写成 Math.min(命令上限, …) 的话，命令上限降到 5s 之后，慢主机上一次探测延迟
+ * 就会报「预检超时」这种假失败（2026-11-05 复核）。
+ */
+export const SYNTAX_CHECK_TIMEOUT_MS = 1_500;
+
 /** 在远端用 `bash -n` 做语法预检；不执行命令，也不影响现有会话 */
-export function syntaxCheck(conn: Client, command: string, timeoutMs = 8_000): Promise<{ ok: boolean; stderr: string }> {
+export function syntaxCheck(conn: Client, command: string, timeoutMs = SYNTAX_CHECK_TIMEOUT_MS): Promise<{ ok: boolean; stderr: string }> {
   const err = new OutputSink(4000);
   let code: number | null = null;
   let ch: ClientChannel | null = null;
@@ -481,7 +490,7 @@ export class ShellSession {
     const syntax = looksSyntacticallySuspicious(command);
 
     if (syntax) {
-      const check = await syntaxCheck(this.conn, command, Math.min(timeoutMs, 8_000));
+      const check = await syntaxCheck(this.conn, command);
       if (!check.ok) {
         return {
           ok: false,

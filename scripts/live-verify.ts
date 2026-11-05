@@ -246,7 +246,7 @@ async function main() {
     const ms = Date.now() - t0;
     assert.equal(p.exit_code, 0);
     assert.notEqual(p.timed_out, true);
-    assert.ok(ms < 5000, `cat 用了 ${ms}ms，可能被 stdin 卡住`);
+    assert.ok(ms < 2000, `cat 用了 ${ms}ms，可能被 stdin 卡住`);
     return `cat 返回 exit=0，用时=${ms}ms（桥自动补 < /dev/null，不需要参数）`;
   });
 
@@ -307,6 +307,29 @@ async function main() {
     const probe = await call2(cl, "ssh_run", { host: HOST, command: `test -e ${marker} && echo 仍在运行 || echo 已被终止` });
     assert.equal(String(probe.stdout).trim(), "仍在运行", "文案说不会终止，实际却被终止了（OpenSSH 行为变了，文案要改）");
     return `${ms}ms 返回 timed_out=true 且 stdout 含 BEFORE-OUT；5s 后标记文件已生成 → 「不会终止远端命令」成立`;
+  });
+
+  await check("A9 默认即上限：不传 timeout_ms 也只等 5s；传更大的值被截并回报 timeout_capped", async () => {
+    // 契约锁的是「只截不拒」：schema 的 maximum 会让 SDK 在进 handler 前抛，命令不执行也没有 structuredContent
+    const t0 = Date.now();
+    const a = await call2(cl, "ssh_run", { host: HOST, command: "sleep 8; echo 不该到这里" });
+    const ms = Date.now() - t0;
+    assert.equal(a.timed_out, true, "默认上限没生效");
+    assert.ok(ms < 9000, `默认 5s 上限没生效：${ms}ms`);
+    const b = await call2(cl, "ssh_run", { host: HOST, command: "sleep 6; echo 不该到这里", timeout_ms: 300_000 });
+    assert.equal(b.timed_out, true, "被截断后应当照样执行并超时");
+    assert.equal(b.timeout_capped, true, "被截断这件事必须在结果里可见");
+    assert.equal(b.timeout_ms, 5000, "生效值应当是被截后的上限（默认即上限）");
+    assert.equal(b.timeout_ms_requested, 300_000);
+    assert.match(String(b.error), /nohup/, "超时文案没指向起后台的写法");
+    const after = await call2(cl, "ssh_run", { host: HOST, command: "echo 还活着" });
+    assert.equal(String(after.stdout).trim(), "还活着");
+    const h = await call2(cl, "ssh_run", { host: HOST, command: "sleep 4; echo warmup-done" });
+    assert.notEqual(h.timed_out, true, "4 秒的活不该撞上限");
+    assert.match(String(h.stdout), /warmup-done/);
+    assert.match(String(h.hint), /nohup/, "命令里的 sleep 等待没有换法提示");
+    assert.match(String(h.hint), /tail -n/);
+    return `默认 ${ms}ms 内 timed_out；timeout_ms=300000 被截到 ${b.timeout_ms}（timeout_capped=true）；sleep 等待带 hint`;
   });
 
   await check("A9 输出预算：truncated=true 并回报真实总量", async () => {

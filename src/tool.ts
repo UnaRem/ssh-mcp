@@ -10,11 +10,20 @@ import pkg from "../package.json" with { type: "json" };
 export const VERSION: string = pkg.version;
 
 export const DEFAULT_READY_TIMEOUT_MS = 12_000;
-export const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
+/**
+ * 默认超时 = 上限：这层桥不承诺「等更久」。依据（实测 2026-11-05，本机 841 次真实调用）：
+ * 83% 的调用本来就在 5s 内完成（p50 0.18s），超过 5s 的 140 次里 68 次是 sleep/轮询等待，
+ * 是姿势错而不是活真的需要那么久。所以 5s 回不来的一律 nohup 起后台再短命令轮询。
+ * 上限写成默认值的别名，两处不可能漂移。
+ */
+export const DEFAULT_EXEC_TIMEOUT_MS = 5_000;
+export const MAX_TIMEOUT_MS = DEFAULT_EXEC_TIMEOUT_MS;
 export const DEFAULT_SESSION_TTL_MS = 600_000;
-export const MAX_TIMEOUT_MS = 600_000;
 export const MAX_COMMAND_CHARS = 20_000;
 
+/** 超出上限的值只截不拒：schema 的 maximum 会让 SDK 在进 handler 之前抛，
+ *  返回没有 structuredContent、命令也不执行（历史里约 300 次传了 30s 以上，那样整段作废）。
+ *  截断由 runOptions 的 timeout_meta 如实回报，不靠这里报错。 */
 export function clampTimeout(v: number | undefined, dflt: number): number {
   if (v === undefined || !Number.isFinite(v)) return dflt;
   return Math.max(1, Math.min(MAX_TIMEOUT_MS, Math.floor(v)));

@@ -26,8 +26,9 @@ src/
   tool.ts        工具结果形状（content JSON + structuredContent）、默认超时/上限常量
   types.ts       共用类型
 docs/domain.md   领域模型：判据（桥只补 shell 给不了的）、统一语言、不变量、错误码语义
-test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约
-scripts/live-verify.ts  真实主机端到端验收（26 项），读 config.local.json
+test/            离线测试（bun test）：helpers.ts 是 fake ssh/sftp 替身；contract.test.ts 锁对外契约，
+                 timeouts.test.ts 锁「超时默认即上限、超出只截不拒」，hints.test.ts 锁结果里的换法提示
+scripts/live-verify.ts  真实主机端到端验收（27 项），读 config.local.json
 scripts/dist-verify.ts  单文件产物的验收（13 项；--offline 只跑协议层 6 项，给 CI 用）
 .github/workflows/release.yml  打 tag → 编译 windows-x64 产物 → 离线自检 → zip 附到 Release
 LICENSE          MIT
@@ -61,7 +62,7 @@ LICENSE          MIT
   子进程走 stdio，断言属性集合恰好等于声明值（多一个参数即失败），并断言每个参数自带文档与 ASCII `Keywords:`。
 - 契约是 TDD 资产：改对外面先改 `test/contract.test.ts`（红），再实现（绿）。`docs/domain.md` 与它是同一结论的两处，
   必须同步改；只改一边会被下一个改动打回。
-- 只改文档不必跑 live；改了 `src/**` 的远端行为，收官要跑一次 `bun run live`（26 项，全 PASS 才算完）。
+- 只改文档不必跑 live；改了 `src/**` 的远端行为，收官要跑一次 `bun run live`（27 项，全 PASS 才算完）。
 - 写验收断言前先读实现返回的真实字段名（例如 `sftpPut` 返回 `bytes_match`，没有 `overwritten`），别凭空造字段。
 
 ## 交付入口
@@ -79,7 +80,7 @@ LICENSE          MIT
    从仓库那份复制）；仓库 `config.local.json` 仍由 live/dist-verify 使用。**两份配置，改一处记得同步另一处**；
    配置每次调用都重读，改完即时生效、不用重启客户端。
 
-验收入口两个：`scripts/live-verify.ts`（源码版 26 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
+验收入口两个：`scripts/live-verify.ts`（源码版 27 项，临时目录里复制一份 `~/.ssh/known_hosts` 做 TOFU/不匹配用例，
 不动真实文件，结束时清理远端临时目录）与 `scripts/dist-verify.ts`（产物版 12 项，重点看 `--compile` 后依赖是否真的带着走）。
 
 **自动发布（只 windows-x64，push 驱动）**：发版 = 把 `package.json` 的 `version` 改一行 → push 到 main →
@@ -184,6 +185,14 @@ LICENSE          MIT
   不必退出客户端的做法（2026-10-30 实测）：`bun run build` → `taskkill //F //IM ssh-mcp.exe`（解锁）→ `cp` →
   `bun run dist-verify`（它自己起进程，不依赖客户端那条连接，13 项照跑）→ 再让客户端重连。
   代价就是上一条：那条 MCP 连接停在 failed，要重连才回到新进程。
+- 超时的默认值就是上限（5000ms），`timeout_ms` 只能调小；超出只截不拒，并在结果里回报生效值与 `timeout_capped`；
+  命令里出现 `sleep N`（N≥3）时结果带 `hint` 指向 `nohup` 起后台再轮询。依据（实测 2026-11-05，本机 841 次真实调用）：
+  83% 本来就在 5s 内完成（p50 0.18s），超过 5s 的 140 次里 68 次是 `sleep`/轮询等待，是用法错而不是活需要那么久。
+  用 schema 的 `.max()` 拒绝是反效果：SDK 在进 handler 之前抛，没有 structuredContent，命令也不执行
+  （历史里约 300 次显式传了 30s 以上，拒绝等于整段作废）。另：zod 的 `.int()` 自带 2^53-1 这个 maximum，
+  契约测试断言的因此是「不等于我们的上限」而不是「没有 maximum」。判据在 `docs/domain.md` 第 9-11 条。
+- `syntaxCheck` 的等待曾写成 `Math.min(命令上限, 8000)`：命令上限降到 5s 后它等于「预检只许等 5s」，
+  慢主机上一次探测延迟就报「预检超时」这种假失败。预检实测几毫秒返回，现在用固定的 `SYNTAX_CHECK_TIMEOUT_MS`（1.5s），与命令上限无关。
 
 ## 环境事实的维护
 

@@ -15,6 +15,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { MAX_TIMEOUT_MS } from "../src/tool.ts";
+
 const PROJECT_DIR = join(import.meta.dir, "..");
 const PKG_VERSION: string = JSON.parse(readFileSync(join(PROJECT_DIR, "package.json"), "utf8")).version;
 
@@ -149,6 +151,20 @@ describe("对外契约：只有两个工具", () => {
       }
       expect(String(schemaProps["host"]?.description)).toContain("ssh config");
       expect(String(schemaProps["session"]?.description)).toContain("keep");
+      // 超时的上限就是默认值。发布的 schema 不带上限：超出只截不拒（由 SDK 拒绝的话
+      // 没有 structuredContent，命令也不会执行），截断这件事由结果里的 timeout_capped 说明。
+      // 注：zod 的 .int() 会自带 2^53-1 这个 maximum，所以断言的是「不等于我们的上限」。
+      const timeoutProp = schemaProps["timeout_ms"] as unknown as { maximum?: number; description?: string };
+      expect(timeoutProp.maximum).not.toBe(MAX_TIMEOUT_MS);
+      expect(Number(timeoutProp.maximum)).toBeGreaterThan(MAX_TIMEOUT_MS);
+      expect(String(timeoutProp.description)).toContain("timeout_capped");
+      expect(String(timeoutProp.description)).toContain("nohup");
+      // 长任务的写法必须写在前面，并自带调用案例：模型是照抄描述的人，不是读源码的人
+      const desc = String(run.description);
+      for (const needle of ["nohup", "调用案例", "sleep", "tail -n"]) {
+        expect(desc).toContain(needle);
+      }
+      expect(desc.indexOf("nohup")).toBeLessThan(desc.indexOf("原生 shell"));
     });
   });
 

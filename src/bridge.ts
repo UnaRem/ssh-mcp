@@ -49,10 +49,16 @@ export interface ToolDef {
   handler(ctx: BridgeCtx, args: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
-/** 把可选的执行控制参数规整成实现层要的形状（都有安全默认值） */
+/** 把可选的执行控制参数规整成实现层要的形状（都有安全默认值）。
+ *  timeout_meta 只在「请求值被截断」时出现：模型必须能看见自己写的 300000 其实按 5000 跑了。 */
 export function runOptions(ctx: BridgeCtx, a: { timeout_ms?: number; max_output_bytes?: number }) {
+  const timeoutMs = clampTimeout(a.timeout_ms, ctx.execTimeoutMs);
+  const capped = a.timeout_ms !== undefined && a.timeout_ms !== timeoutMs;
   return {
-    timeoutMs: clampTimeout(a.timeout_ms, ctx.execTimeoutMs),
+    timeoutMs,
     maxOutputBytes: clampBytes(a.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES),
+    ...(capped
+      ? { timeout_meta: { timeout_ms: timeoutMs, timeout_ms_requested: a.timeout_ms, timeout_capped: true } }
+      : {}),
   };
 }

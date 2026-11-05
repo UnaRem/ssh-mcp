@@ -12,7 +12,7 @@
 import { z } from "zod";
 
 import { DEFAULT_MAX_OUTPUT_BYTES } from "./result.ts";
-import { DEFAULT_EXEC_TIMEOUT_MS, MAX_COMMAND_CHARS, MAX_TIMEOUT_MS } from "./tool.ts";
+import { MAX_COMMAND_CHARS, MAX_TIMEOUT_MS } from "./tool.ts";
 
 export const hostArg = z
   .string()
@@ -69,12 +69,14 @@ export const timeoutArg = z
   .number()
   .int()
   .min(100)
-  .max(MAX_TIMEOUT_MS)
   .optional()
   .describe(
-    `命令超时毫秒，默认 ${DEFAULT_EXEC_TIMEOUT_MS}（上限 ${MAX_TIMEOUT_MS}）。超时是数据：结果里 timed_out=true，不算工具失败，` +
-      "并且会带回超时之前已经产生的输出。注意桥不会终止远端命令——它只是停止等待，命令可能仍在远端跑；" +
-      "要限制时长就在命令里写 timeout <秒> <命令>，长任务用 nohup ... >/dev/null 2>&1 &。",
+    `命令超时毫秒。默认与上限都是 ${MAX_TIMEOUT_MS}：这层桥不承诺「等更久」，超过 ${MAX_TIMEOUT_MS / 1000} 秒的活请用 nohup 起后台再短命令轮询` +
+      "（nohup 长命令 > /path/job.log 2>&1 & echo $!，之后 tail -n 50 /path/job.log）。" +
+      `传更大的值不报错，会被截到 ${MAX_TIMEOUT_MS} 并在结果里回报 timeout_capped 与实际生效的 timeout_ms；` +
+      "所以这条参数只能调小，用来让可能卡住的探测早点失败。" +
+      "超时是数据：结果里 timed_out=true，不算工具失败，并带回超时之前已经产生的输出；" +
+      "桥不会终止远端命令，只是停止等待，要限制时长就在命令里写 timeout <秒> <命令>。",
   );
 
 export const budgetArg = z

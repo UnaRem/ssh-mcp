@@ -10,6 +10,7 @@ import { bridgeError } from "../envelope.ts";
 import type { Acquired, BridgeCtx, ToolDef } from "../bridge.ts";
 import { runOptions } from "../bridge.ts";
 import { commandArgOpt, cwdArg, envArg, hostArgOpt, budgetArg, sessionArg, sessionOpArg, timeoutArg } from "../schema.ts";
+import { MAX_TIMEOUT_MS } from "../tool.ts";
 import type { ShellSession } from "../session.ts";
 
 interface RunArgs {
@@ -30,12 +31,36 @@ interface RunArgs {
 const STATEFUL_COMMAND = /(^|[;&|]\s*)(cd|export|source|alias|set|unset)\s/;
 
 /** 需要会话才能做到的命令：给出可操作提示，不擅自改成开会话 */
-function statefulHint(command: string): string | undefined {
+export function statefulHint(command: string): string | undefined {
   if (!STATEFUL_COMMAND.test(command)) return undefined;
   return (
     "本次是一次性通道：命令里的 cd/export 只在这一次有效。" +
     '要跨调用保持，请在 ssh_run 里加 session="keep"（同一台主机会自动复用同一个 shell）。'
   );
+}
+
+/**
+ * 用 sleep 占住这次调用 = 白等，而且多半先撞上限。判据与 statefulHint 一样：只提示，不改命令。
+ * 阈值 3 秒：3 秒以内的 sleep 通常是链式热身（起服务、等设备就绪），打扰它没有收益
+ * （实测 2026-11-05：历史 89 次含 sleep 的调用里，值≤5 的有 30 次，≥20 的有 30 次）。
+ */
+const SLEEP_ARG = /\bsleep\s+(\d+(?:\.\d+)?)/g;
+const SLEEP_HINT_FROM = 3;
+
+export function waitHint(command: string): string | undefined {
+  const secs = [...command.matchAll(SLEEP_ARG)].map((m) => Number(m[1]));
+  const worst = secs.reduce((a, b) => (b > a ? b : a), 0);
+  if (worst < SLEEP_HINT_FROM) return undefined;
+  return (
+    `命令里有 sleep ${worst}：等待不该占住这次调用（上限 ${MAX_TIMEOUT_MS / 1000} 秒，到点就 timed_out）。` +
+    "要跑得更久就起后台再轮询：nohup 长命令 > /path/job.log 2>&1 & echo $!，之后 tail -n 50 /path/job.log 或 kill -0 <pid>。"
+  );
+}
+
+/** 同一次调用里多条提示合成一条，不新增字段 */
+function hintFor(command: string): string | undefined {
+  const all = [statefulHint(command), waitHint(command)].filter((h): h is string => Boolean(h));
+  return all.length ? all.join(" ") : undefined;
 }
 
 /** 解析 session：显式 id 必须存在（含被 TTL 回收的说明）；"keep" 按主机建立或复用 */
@@ -103,9 +128,14 @@ export const runTool: ToolDef = {
   title: "在远端执行命令",
   description:
     "在远端 Linux 上执行一行命令，返回 exit_code / stdout / stderr / cwd / 是否超时 / 是否截断与真实总量。" +
-    "命令写法就是原生 shell：多步用 && / ; / 管道，取尾部用 tail -n，取区间用 sed -n，过滤用 grep，" +
-    "写文件用 cat > f <<'EOF'，建目录用 mkdir -p。命令失败（exit_code != 0）不是工具错误，是数据。" +
-    "同一台主机的连接会自动复用；要跨调用保持 cwd 与 export 就传 session=\"keep\"。" +
+    `跑不完 ${MAX_TIMEOUT_MS / 1000} 秒的活先起后台：nohup 长命令 > /path/job.log 2>&1 & echo $! 立刻返回 pid，` +
+    `之后 tail -n 50 /path/job.log 轮询。单次调用最长 ${MAX_TIMEOUT_MS / 1000} 秒（timeout_ms 只能调小），` +
+    "到点就 timed_out=true 并停止等待，远端命令不会被杀。所以不要用 sleep 在这里等结果，要等就轮询。" +
+    "命令写法就是原生 shell：多步用 && / ; / 管道，取尾部用 tail -n，取区间用 sed -n，过滤用 grep，写文件用 cat > f <<'EOF'，建目录用 mkdir -p。" +
+    "命令失败（exit_code != 0）不是工具错误，是数据。" +
+    '同一台主机的连接会自动复用；要跨调用保持 cwd 与 export 就传 session="keep"（会话里的命令撞到超时会重开，cwd 与 export 清空）。' +
+    '调用案例：查状态 {host:"lan",command:"df -h /data"}；起后台再轮询 {host:"lan",command:"nohup .venv/bin/python train.py > /home/u/job.log 2>&1 & echo $!"} 然后 {command:"tail -n 50 /home/u/job.log"}；' +
+    '保持目录 {host:"lan",session:"keep",command:"cd /data/app && make -j4"}。' +
     "不知道有哪些主机或想看清当前状态时，什么都不传就返回主机清单与活动连接/会话。",
   keywords:
     "Keywords: ssh run command execute remotely shell exec exit code stdout stderr " +
@@ -160,8 +190,10 @@ export const runTool: ToolDef = {
         ctx.sessions.close(session.id);
         return { closed: [session.id], remaining: ctx.sessions.list() };
       }
-      const r = await session.exec(a.command!, runOptions(ctx, a));
-      return { ...r, session_id: session.id, idle_ttl_ms: ctx.sessions.idleTtlMs };
+      const opts = runOptions(ctx, a);
+      const r = await session.exec(a.command!, opts);
+      const hint = hintFor(a.command!);
+      return { ...r, ...(opts.timeout_meta ?? {}), ...(hint ? { hint } : {}), session_id: session.id, idle_ttl_ms: ctx.sessions.idleTtlMs };
     }
 
     if (!a.host) {
@@ -179,11 +211,13 @@ export const runTool: ToolDef = {
     }
 
     const acquired = await ctx.acquire({ host: a.host! });
-    const r = await runOnce(acquired.target, acquired.conn.conn, a.command!, runOptions(ctx, a));
-    const hint = statefulHint(a.command!);
+    const opts = runOptions(ctx, a);
+    const r = await runOnce(acquired.target, acquired.conn.conn, a.command!, opts);
+    const hint = hintFor(a.command!);
     return {
       ...r,
       ...ctx.connMeta(acquired),
+      ...(opts.timeout_meta ?? {}),
       session: "one_shot",
       ...(hint ? { hint } : {}),
     };

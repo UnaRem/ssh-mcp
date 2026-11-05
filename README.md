@@ -207,10 +207,11 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 | `session` | `keep`（新建并复用）或之前返回的 `session_id`；只有一个活动会话时可省 `host` |
 | `session_op` | `reset`（回登录目录）/ `close`（结束会话），与 `command` 互斥 |
 | `cwd` `env` | 一次性生效的工作目录/环境变量（要跨调用保持就用会话，返回里 `hint` 会说明） |
-| `timeout_ms` `max_output_bytes` | 本次调用的超时与输出预算上限 |
+| `timeout_ms` `max_output_bytes` | 本次调用的超时与输出预算。`timeout_ms` 只能调小：默认与上限都是 5000，超出会被截并在结果里回报 `timeout_capped` |
 
 返回：`ok` `exit_code` `stdout` `stderr` `cwd` `timed_out` `truncated` + 真实总量（`stdout_bytes`/`stdout_lines`）
-+ 连接元信息（`connection`、`auth_*`、`host_key`）；会话调用带 `session_id`。
++ 连接元信息（`connection`、`auth_*`、`host_key`）；会话调用带 `session_id`；`timeout_ms` 被截断时带
+`timeout_ms`（实际生效值）/`timeout_ms_requested`/`timeout_capped`。
 
 自省模式（不传参数）返回：`mode:"inventory"`、`hosts` 清单与来源、配置路径、`active_connections`、`active_sessions`。
 
@@ -251,7 +252,12 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 - `timeout_ms` 到期 → `timed_out: true`，server 与连接都还活着；**超时之前产生的输出照常带回**（在 `stdout` 里），
   并回报 `stdout_bytes`/`stdout_lines`；
 - 超时只是**停止等待**：桥不会终止远端命令（实测 2026-10-30，被放弃的命令会在远端继续跑完）。
-  要限制时长就在命令里写 `timeout <秒> <命令>`，长任务用 `nohup ... >/dev/null 2>&1 &`，要等更久就传更大的 `timeout_ms`；
+  要限制时长就在命令里写 `timeout <秒> <命令>`；要跑得更久就起后台再轮询：
+  `nohup 长命令 > /path/job.log 2>&1 & echo $!`，之后 `tail -n 50 /path/job.log` 或 `kill -0 <pid>`；
+- 超时的默认值就是上限（5000ms），没有「传更大就能等更久」这条路。依据是实测 2026-11-05 的 841 次真实调用：
+  83% 本来就在 5s 内完成，超过 5s 的 140 次里 68 次是 `sleep`/轮询等待。**超出上限的值只截不拒**
+  （schema 的 `maximum` 会让 SDK 在进 handler 前抛，没有 `structuredContent`，命令也不执行），
+  并在结果里如实回报 `timeout_capped`；命令里出现 `sleep N`（N≥3）时结果带 `hint` 指向起后台的写法；
 - 输出超预算 → `truncated: true`，并回报真实总量；想少看点就在命令里用 `head`/`tail`/`sed`；
 - 一次性调用默认给命令补 `< /dev/null`（`cat` 不会挂死）；管道命令不补，以免改变语义；
 - 引号未闭合等语法错误先过远端 `bash -n` 预检，返回「命令未执行」+ bash 的报错，命令不会半执行；
@@ -267,7 +273,7 @@ host key 记录是每台机器自己的（`~/.ssh/known_hosts`，TOFU 首连自�
 | `SSH_MCP_KNOWN_HOSTS` | `~/.ssh/known_hosts` | known_hosts 路径 |
 | `SSH_MCP_PASSWORD` / `SSH_MCP_PASSWORD_<ALIAS>` | — | 密码兜底 |
 | `SSH_MCP_READY_TIMEOUT_MS` | 12000 | 握手/认证等待上限 |
-| `SSH_MCP_EXEC_TIMEOUT_MS` | 30000 | 命令默认超时（工具可覆盖，上限 600000） |
+| `SSH_MCP_EXEC_TIMEOUT_MS` | 5000 | 命令超时。**默认即上限**：环境变量只能调小，再大的值也会被截（见「行为保证」） |
 | `SSH_MCP_SESSION_TTL_MS` | 600000 | 会话空闲 TTL |
 | `SSH_MCP_CONN_TTL_MS` | 300000 | 进程内连接池空闲 TTL |
 
