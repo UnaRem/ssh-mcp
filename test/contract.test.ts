@@ -24,7 +24,7 @@ const PKG_VERSION: string = JSON.parse(readFileSync(join(PROJECT_DIR, "package.j
 
 /** 两个工具就是全部对外面。多一个即契约漂移。
  *  名字不带 ssh_ 前缀：server 身份名 "ssh" 已经提供命名空间（PI-Desktop 可见名 mcp_ssh_<tool>），
- *  原名 ssh_run/ssh_file 会拼出 mcp_ssh_ssh_run 这种重复段；改名记录见 AGENTS.md。 */
+ *  原名 ssh_run/ssh_file 会拼出 mcp_ssh_ssh_run 这种重复段；改名记录见 docs/domain.md 不变量 12 与 README「接入 MCP 客户端」。 */
 const REQUIRED_TOOLS = ["exec", "transfer"];
 
 /** 每个工具声明的属性集合。实现细节（keep_stdin、连接参数）不允许出现在这里。 */
