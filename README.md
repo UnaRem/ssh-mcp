@@ -31,20 +31,43 @@
 
 ## 安装
 
-要求 [bun](https://bun.sh)（实测 bun 1.3.14）。三种方式，功能与验收完全一致：
+新机器推荐**按 GitHub 仓库安装**（不 clone）：放 exe 一条命令、装 SKILL 一条命令；更新是重跑同两条命令，不用换 URL。
+
+**1. 产物（Windows x64）**——固定名资产 `ssh-mcp-windows-x64.zip` 每个 Release 都挂，`latest` 永远指向最新版：
+
+```powershell
+New-Item -ItemType Directory -Force $HOME/tools | Out-Null
+if (Get-Process ssh-mcp -ErrorAction SilentlyContinue) { Stop-Process -Name ssh-mcp -Force }  # Windows 不让覆盖正在运行的 exe，先解锁
+Invoke-WebRequest https://github.com/UnaRem/ssh-mcp/releases/latest/download/ssh-mcp-windows-x64.zip -OutFile $HOME/tools/ssh-mcp.zip
+Expand-Archive $HOME/tools/ssh-mcp.zip $HOME/tools -Force
+Remove-Item $HOME/tools/ssh-mcp.zip
+```
+
+产物是单文件 exe（含 bun 运行时与原生模块），解压即用，无需其它依赖。第一次启动会在 exe 同级自动生成
+配置模板（见「配置」）；编辑 `~/tools/config.local.json`、把客户端 `command` 指向 exe（见「接入 MCP 客户端」）
+即完成初始化。更新 = 重跑上面的命令，然后让客户端重连那条 MCP 连接。
+
+**2. SKILL**——支持技能的客户端需要；从本仓库装进 `~/.agents/skills`（pi/opencode/codex 共用的枢纽，
+装完自动链到各客户端的技能目录）：
+
+```powershell
+npx -y skills add UnaRem/ssh-mcp -g -y
+# 更新：npx skills update ssh-mcp -g -y
+```
+
+走 [skills CLI](https://skills.sh)，按 lockfile 管理，`update` 会按记录源重新拉取仓库。
+SKILL 与工具名由契约测试锁成同版（不变量 12），换 exe 时把它一起跑。
+
+开发期（要改代码）才需要 clone 仓库；bun 版本实测 1.3.14：
 
 | 方式 | 命令 | 适用 |
 | --- | --- | --- |
 | 源码直跑 | `bun install && bun run src/index.ts` | 开发期（改代码即生效） |
-| 本地构建产物 | `bun run build` → `dist/ssh-mcp.exe` | 对端不装 bun 也能用 |
-| 下载发布产物 | GitHub Releases 的 `ssh-mcp-<版本>-windows-x64.zip`（解压即 `ssh-mcp.exe`） | 不想碰仓库 |
+| 本地构建产物 | `bun run build` → `dist/ssh-mcp.exe` | 改动要在产物上验收 |
 
-产物是单文件 exe（含 bun 运行时与原生模块），解压即用，无需其它依赖。
-新机器上第一次启动会在 exe 同级自动生成配置模板（见下），两步完成初始化：
-把 exe 放到固定位置、在客户端里指向它；然后编辑生成的 `config.local.json`。
-
-SKILL 不走 zip：源码直跑的客户端直接读仓库里的 `skills/`；产物安装位用 `bun run sync-skill`
-同步到本机 agent 的技能目录（默认 `~/.agents/skills/ssh-mcp`，`--target` 可指各客户端自己的技能目录）。
+开发机的 SKILL 直接让客户端读仓库 `skills/`，或用 `bun run sync-skill` 拷到本机技能目录
+（默认 `~/.agents/skills/ssh-mcp`，`--target` 可指各客户端自己的目录）。注意别和 skills CLI 的托管混用：
+sync-skill 只是拷贝、不进 lockfile，`skills update` 也不认它——装了哪种就用哪种的更新方式。
 
 ## 配置
 
@@ -197,6 +220,10 @@ bun run dist-verify # 对产物 13 项验收（--offline 只跑协议层 6 项�
 GitHub Actions（`.github/workflows/release.yml`）在该 commit 创建 `v<版本>` tag，
 跑 lint + 离线测试 + 编译 + `dist-verify --offline` 自检，把 zip 挂到 Release；版本号没改的 push 整段跳过。
 版本号只写在 `package.json` 一处（代码与契约测试从它读取，tag 由 CI 创建），保证 tag ↔ commit ↔ 二进制对应。
+每个 Release 挂两个 zip：`ssh-mcp-<版本>-windows-x64.zip`（按版本存档）与固定名的稳定直链
+`ssh-mcp-windows-x64.zip`（「永远取最新版」的安装/更新命令用它，见「安装」）。
+不发 npm：安装路径以仓库为准（exe 走 Release 直链、SKILL 走 skills CLI），不占也不依赖 npm 包名——
+npm 上的 `ssh-mcp` 名字 2026-11 实测已被另一个项目占用，走 npm 还得改名与发布账号，收益不抵成本。
 
 ## 边界（明确不做）
 
