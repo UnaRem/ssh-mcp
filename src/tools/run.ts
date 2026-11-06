@@ -1,16 +1,18 @@
 /**
- * ssh_run：这层桥唯一的执行入口。
+ * exec：这层桥唯一的执行入口。
  *
  * 契约是「透传一行原生命令」，其余能力都是桥自己保证的：认证与主机校验、连接复用、
  * 退出码与 stdout/stderr 分离、输出预算与总量、跨调用的会话状态。
  * 模型不需要知道我们的哨兵协议、也不需要在多种调用方式之间选。
+ * description 只放判定所需的事实；案例/反例/写法教学在 skills/ssh-mcp/SKILL.md
+ * （随安装注入），薄厚分界由 test/contract.test.ts 的 MAX_DESCRIPTION_CHARS 守着。
  */
 import { runOnce } from "../exec.ts";
 import { bridgeError } from "../envelope.ts";
 import type { Acquired, BridgeCtx, ToolDef } from "../bridge.ts";
 import { runOptions } from "../bridge.ts";
 import { commandArgOpt, cwdArg, envArg, hostArgOpt, budgetArg, sessionArg, sessionOpArg, timeoutArg } from "../schema.ts";
-import { MAX_TIMEOUT_MS } from "../tool.ts";
+import { EXEC_TOOL_NAME, MAX_TIMEOUT_MS } from "../tool.ts";
 import type { ShellSession } from "../session.ts";
 
 interface RunArgs {
@@ -35,7 +37,7 @@ export function statefulHint(command: string): string | undefined {
   if (!STATEFUL_COMMAND.test(command)) return undefined;
   return (
     "本次是一次性通道：命令里的 cd/export 只在这一次有效。" +
-    '要跨调用保持，请在 ssh_run 里加 session="keep"（同一台主机会自动复用同一个 shell）。'
+    '要跨调用保持，请再调用时带 session="keep"（同一台主机会自动复用同一个 shell）。'
   );
 }
 
@@ -123,22 +125,17 @@ async function resolveSession(ctx: BridgeCtx, a: RunArgs): Promise<{ session: Sh
   return { session: created, acquired };
 }
 
-export const runTool: ToolDef = {
-  name: "ssh_run",
+export const execTool: ToolDef = {
+  name: EXEC_TOOL_NAME,
   title: "在远端执行命令",
   description:
-    "在远端 Linux 上执行一行命令，返回 exit_code / stdout / stderr / cwd / 是否超时 / 是否截断与真实总量。" +
-    `跑不完 ${MAX_TIMEOUT_MS / 1000} 秒的活先起后台：nohup 长命令 > /path/job.log 2>&1 & echo $! 立刻返回 pid，` +
-    `之后 tail -n 50 /path/job.log 轮询。单次调用最长 ${MAX_TIMEOUT_MS / 1000} 秒（timeout_ms 只能调小），` +
-    "到点就 timed_out=true 并停止等待，远端命令不会被杀。所以不要用 sleep 在这里等结果，要等就轮询。" +
-    "命令写法就是原生 shell：多步用 && / ; / 管道，取尾部用 tail -n，取区间用 sed -n，过滤用 grep，写文件用 cat > f <<'EOF'，建目录用 mkdir -p。" +
-    "命令失败（exit_code != 0）不是工具错误，是数据。" +
-    '同一台主机的连接会自动复用；要跨调用保持 cwd 与 export 就传 session="keep"（会话里的命令撞到超时会重开，cwd 与 export 清空）。' +
-    '调用案例：查状态 {host:"lan",command:"df -h /data"}；起后台再轮询 {host:"lan",command:"nohup .venv/bin/python train.py > /home/u/job.log 2>&1 & echo $!"} 然后 {command:"tail -n 50 /home/u/job.log"}；' +
-    '保持目录 {host:"lan",session:"keep",command:"cd /data/app && make -j4"}。' +
-    "不知道有哪些主机或想看清当前状态时，什么都不传就返回主机清单与活动连接/会话。",
+    "在远端 Linux 上执行一行原生命令，返回 exit_code / stdout / stderr / cwd / 是否超时与截断及真实总量。" +
+    "exit_code != 0 与 timed_out=true 都是数据，不是工具错误。" +
+    `timeout_ms 只能调小（默认即上限 ${MAX_TIMEOUT_MS / 1000} 秒）；跑不完的活用 nohup 起后台再短命令轮询，本桥不等待、也不会杀远端进程。` +
+    '跨调用保持 cwd 与 export 传 session="keep"；同一主机的连接自动复用。' +
+    `不传任何参数调用 ${EXEC_TOOL_NAME} 会返回主机清单与活动连接/会话。命令写法、正反例与完整语义见 skill「ssh-mcp」。`,
   keywords:
-    "Keywords: ssh run command execute remotely shell exec exit code stdout stderr " +
+    "Keywords: exec ssh remote linux run command execute remotely shell exec exit code stdout stderr " +
     "list hosts inventory df disk usage uname systemctl journalctl service log grep tail sed cd export pwd " +
     "persistent shell session keep cwd working directory batch multiple steps one connection",
   shape: {
@@ -168,7 +165,7 @@ export const runTool: ToolDef = {
       bridgeError(
         "bad_input",
         "缺少 command：把要在远端跑的这行命令传进来（多步用 && / ; / 管道）。" +
-          "只想看有哪些主机或当前状态，就什么都不要传。",
+          "只想看有哪些主机或当前状态，就什么都不要传，这次调用会返回清单。",
       );
     }
 
@@ -200,7 +197,7 @@ export const runTool: ToolDef = {
       bridgeError(
         "bad_input",
         "缺少 host：传 ~/.ssh/config 里的别名或 user@ip。" +
-          "不确定有什么主机就什么都不传，结果会返回主机清单。",
+          "不确定有什么主机就什么都不传，这次调用会返回主机清单。",
       );
     }
     if (a.cwd || a.env) {

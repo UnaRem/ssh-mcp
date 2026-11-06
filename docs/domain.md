@@ -1,6 +1,6 @@
 # 领域模型（对外契约的根据）
 
-这份文件回答「为什么参数长这样」，不是用法手册（用法在 README 与各工具的 schema description 里）。
+这份文件回答「为什么参数长这样」，不是用法手册（用法与正反例在 skills/ssh-mcp/SKILL.md，随安装注入；参数契约在各工具的 schema description 里）。
 改 `src/tools/*`、`src/schema.ts`、`src/envelope.ts` 之前先读这里；`test/contract.test.ts` 锁的就是这里的结论。
 
 ## 1. 判据：桥只补 shell 给不了的东西
@@ -17,7 +17,9 @@
   `User`/`HostName`/`Port`/`StrictHostKeyChecking`，或 `user@ip` 这种原生写法。
   在工具上再开一份就等于两处真值。
 
-因此对外只有两个工具：`ssh_run`（执行）与 `ssh_file`（搬文件）。多一个工具就是契约漂移，
+因此对外只有两个工具：`exec`（执行）与 `transfer`（搬文件）。名字不再带 `ssh_` 前缀——server 身份名
+（`index.ts` 里的 `"ssh"`）已经提供命名空间，带前缀的客户端可见名拼出 `mcp_ssh_exec` / `mcp_ssh_transfer`；
+工具名再带 ssh_ 段就是重复（旧名 ssh_run/ssh_file 实测被模型写漏段）。多一个工具就是契约漂移，
 `test/contract.test.ts` 会失败。
 
 ## 2. 统一语言
@@ -43,7 +45,7 @@
    枚举错误码 + 可操作的 `error` 文案 + 补救所需的事实（未知主机回 `available_hosts`，
    未知会话回 `active_sessions`，认证失败回 `attempted_methods`）。
 4. **出错不动连接池。** 参数错误与连接无关；把可疑连接的摘除交给 ssh2 的 `close`/`error` 事件与
-   取用时的 TTL 判定。（实测教训：无条件 `dropHost` 曾让一次 `op` 写错的 `ssh_file` 调用杀掉同主机的 keep 会话。）
+   取用时的 TTL 判定。（实测教训：无条件 `dropHost` 曾让一次 `op` 写错的 `transfer` 调用杀掉同主机的 keep 会话。）
 5. **参数集合是硬契约。** 发布的 JSON Schema 带 `additionalProperties: false`（`z.object(...).strict()`）：
    多余参数被立刻拒绝而不是被 SDK 静默剥掉。工具属性集合变化必须同步改 `test/contract.test.ts`。
 6. **工具描述末尾必须带 ASCII `Keywords:`。** 客户端的工具检索按 ASCII 分词，中文不参与匹配，
@@ -66,6 +68,12 @@
    命令里出现 `sleep N`（N≥3）时结果带 `hint` 指向起后台的写法：只提示，不改命令。
 11. **预检的等待与命令上限解耦。** `bash -n` 实测几毫秒返回，用固定的 `SYNTAX_CHECK_TIMEOUT_MS`（1.5s）。
    写成 `Math.min(命令上限, …)` 的话，命令上限降到 5s 后，慢主机上一次探测延迟就会报「预检超时」这种假失败（实测 2026-11-05）。
+12. **面薄，教学在 SKILL，两处必须同步。** 工具 description 只承载「判定所需的事实 + 边界 + ASCII Keywords」，
+    上限 `MAX_DESCRIPTION_CHARS=800`（contract test 强制）；案例、反例、完整语义只写在 `skills/ssh-mcp/SKILL.md`。
+    理由：description 每一轮都进模型上下文，案例放那里是每轮都付费；SKILL 由客户端按触发描述选择性注入，
+    「有工具却不用」的问题由它来解。因此 SKILL 是发布物的一部分：改工具名必须同时改注册名、SKILL 里的名字、
+    contract test 三处（测试断言 SKILL 引用的反引号名与 REQUIRED_TOOLS 一致、正反例锚点齐全），
+    安装侧用 `bun run sync-skill` 把 SKILL 放到 agent 的技能目录。
 
 ## 4. 分层与边界
 

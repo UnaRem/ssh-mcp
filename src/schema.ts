@@ -7,20 +7,22 @@
  * - 多步、取尾部、区间、过滤、写文件、建目录都是原生命令（&& / tail / sed / grep / heredoc / mkdir -p），
  *   不重造成 commands、output_mode 之类的参数；
  * - 只保留：目标主机、命令、跨调用的会话、超时与输出预算。
- * 文档写进 schema：默认值、取值范围、什么时候不要传，模型才不用猜。
+ * description 只写契约：默认值、取值范围、什么时候不要传。
+ * 用法教学（案例、反例、完整语义）在 skills/ssh-mcp/SKILL.md，随安装注入给 agent——
+ * 薄厚分界由 test/contract.test.ts 守着，两边名字漂移即红。
  */
 import { z } from "zod";
 
 import { DEFAULT_MAX_OUTPUT_BYTES } from "./result.ts";
-import { MAX_COMMAND_CHARS, MAX_TIMEOUT_MS } from "./tool.ts";
+import { EXEC_TOOL_NAME, MAX_COMMAND_CHARS, MAX_TIMEOUT_MS, TRANSFER_TOOL_NAME } from "./tool.ts";
 
 export const hostArg = z
   .string()
   .min(1)
   .describe(
-    "目标主机：~/.ssh/config 里的 Host 别名、config.local.json 里的名字，或原生写法 user@ip / ip / [v6]:port。" +
+    "目标主机：~/.ssh/config 里的 Host 别名、config.local.json 里的名字，或原生写法 user@ip / ip / host:port / [v6]:port。" +
       "用户名与端口写在 ssh config（User/HostName/Port）或用 user@ip，没有额外的用户/端口参数。" +
-      "不确定有哪些主机时，ssh_run 什么都不传就会把清单返回。",
+      `不确定有哪些主机时，${EXEC_TOOL_NAME} 什么都不传就会把清单返回。`,
   );
 
 export const commandArg = z
@@ -28,13 +30,13 @@ export const commandArg = z
   .min(1)
   .max(MAX_COMMAND_CHARS)
   .describe(
-    "原样交给远端 bash -lc 的一行命令，不做本地改写。多步用 && / ; / 管道；只看尾部用 tail -n；" +
-      "看区间用 sed -n '120,180p'；过滤用 grep；写文件用 cat > f <<'EOF'；建目录用 mkdir -p。" +
-      "这些都不需要额外参数：命令怎么写，远端就怎么跑。",
+    "原样交给远端 bash -lc 的一行命令，不做本地改写。多步用 && / ; / 管道；取尾部用 tail -n；" +
+      "取区间用 sed -n '120,180p'；过滤用 grep；写文件用 cat > f <<'EOF'；建目录用 mkdir -p。" +
+      "这些都不需要额外参数：命令怎么写，远端就怎么跑。写法案例见 skill「ssh-mcp」。",
   );
 
 /**
- * ssh_run 的 host/command 是可以都不传的：那时这次调用变成自省（返回主机清单与活动状态）。
+ * exec 的 host/command 是可以都不传的：那时这次调用变成自省（返回主机清单与活动状态）。
  * 「该传什么」由 handler 判定并给出可操作说明，而不是靠 schema 的 required 一刀切。
  */
 export const hostArgOpt = hostArg.optional();
@@ -71,12 +73,10 @@ export const timeoutArg = z
   .min(100)
   .optional()
   .describe(
-    `命令超时毫秒。默认与上限都是 ${MAX_TIMEOUT_MS}：这层桥不承诺「等更久」，超过 ${MAX_TIMEOUT_MS / 1000} 秒的活请用 nohup 起后台再短命令轮询` +
-      "（nohup 长命令 > /path/job.log 2>&1 & echo $!，之后 tail -n 50 /path/job.log）。" +
-      `传更大的值不报错，会被截到 ${MAX_TIMEOUT_MS} 并在结果里回报 timeout_capped 与实际生效的 timeout_ms；` +
-      "所以这条参数只能调小，用来让可能卡住的探测早点失败。" +
+    `命令超时毫秒。默认与上限都是 ${MAX_TIMEOUT_MS}：只能调小，传更大的值不报错，会被截到上限并在结果里回报 timeout_capped 与实际生效的 timeout_ms。` +
+      `这层桥不承诺「等更久」：${MAX_TIMEOUT_MS / 1000} 秒回不来的活起后台再轮询（写法见 skill「ssh-mcp」）。` +
       "超时是数据：结果里 timed_out=true，不算工具失败，并带回超时之前已经产生的输出；" +
-      "桥不会终止远端命令，只是停止等待，要限制时长就在命令里写 timeout <秒> <命令>。",
+      "桥只是停止等待，不会终止远端命令；要限制时长就在命令里写 timeout <秒> <命令>。",
   );
 
 export const budgetArg = z
@@ -87,7 +87,7 @@ export const budgetArg = z
   .optional()
   .describe(
     `stdout/stderr 各自的字节预算，默认 ${DEFAULT_MAX_OUTPUT_BYTES}。超出会 truncated=true 并回报真实总字节与总行数；` +
-      "想少看点就在命令里用 head/tail/sed，想拿完整文件就用 ssh_file 的 get。",
+      `想少看点就在命令里用 head/tail/sed，想拿完整文件就用 ${TRANSFER_TOOL_NAME} 的 get。`,
   );
 
 /** 传输条目：SFTP 只做 shell 做不好的事 —— 二进制文件原样搬运。列目录/读文本都走原生命令。 */
@@ -96,7 +96,7 @@ export const transferEntryArg = z
     op: z
       .string()
       .min(1)
-      .describe('只能是 "put"（本机→远端）或 "get"（远端→本机）。列目录、看属性、读文本请用 ssh_run 的 ls / stat / sed。'),
+      .describe(`只能是 "put"（本机→远端）或 "get"（远端→本机）。列目录、看属性、读文本请用 ${EXEC_TOOL_NAME} 的 ls / stat / sed。`),
     remote_path: z.string().min(1).describe("远端路径。~ 展开为远端用户家目录。"),
     local_path: z.string().min(1).describe("本机路径（绝对路径推荐）。~ 展开为本机家目录。get 时会按需创建父目录。"),
     overwrite: z.boolean().optional().describe("默认 false：目标已存在就报错，不静默覆盖。确认覆盖才传 true。"),

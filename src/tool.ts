@@ -9,6 +9,15 @@ import pkg from "../package.json" with { type: "json" };
 /** 版本号只有一个来源：package.json。tag/发布改一处，serverInfo 与启动横幅跟着走（契约测试断言一致）。 */
 export const VERSION: string = pkg.version;
 
+/**
+ * 工具名的单一来源：注册、错误文案、schema 里的互指都从这里取，改名只动一处。
+ * 名字不带 ssh_ 前缀——server 身份名 "ssh" 已经提供命名空间（PI-Desktop 可见名 mcp_ssh_exec /
+ * mcp_ssh_transfer）；旧名 ssh_run/ssh_file 会拼出 mcp_ssh_ssh_run 这种重复段（实测模型写错）。
+ * 对外契约的守卫在 test/contract.test.ts 的字面量表里，两处漂移即红。
+ */
+export const EXEC_TOOL_NAME = "exec";
+export const TRANSFER_TOOL_NAME = "transfer";
+
 export const DEFAULT_READY_TIMEOUT_MS = 12_000;
 /**
  * 默认超时 = 上限：这层桥不承诺「等更久」。依据（实测 2026-11-05，本机 841 次真实调用）：

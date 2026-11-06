@@ -1,10 +1,11 @@
 /**
- * ssh_file：桥的第二个工作闭环——本机与远端之间搬文件。
+ * transfer：桥的第二个工作闭环——本机与远端之间搬文件。
  *
  * 只做 shell 做不好的事：二进制文件原样搬运（put/get），带大小校验与 sha256。
- * 列目录、看属性、读文本、建目录一律走 ssh_run 的 ls / stat / sed / cat / mkdir -p，
+ * 列目录、看属性、读文本、建目录一律走 exec 的 ls / stat / sed / cat / mkdir -p，
  * 因为那些命令模型本来就会写，再造一套参数只会增加出错面。
  * 一次调用在同一条 SFTP 连接里按顺序完成多个条目（每个条目都是一个 RTT）。
+ * 完整语义与正反例在 skills/ssh-mcp/SKILL.md；这里只留判定所需的事实。
  */
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -13,6 +14,7 @@ import type { BridgeCtx, ToolDef } from "../bridge.ts";
 import { bridgeError, classifyMessage } from "../envelope.ts";
 import { entriesArg, hostArg } from "../schema.ts";
 import { expandTilde } from "../result.ts";
+import { EXEC_TOOL_NAME, TRANSFER_TOOL_NAME } from "../tool.ts";
 import * as sftlops from "../sftlops.ts";
 
 interface Entry {
@@ -28,13 +30,14 @@ function sha256File(p: string): string {
   return createHash("sha256").update(fs.readFileSync(p)).digest("hex");
 }
 
-export const fileTool: ToolDef = {
-  name: "ssh_file",
+export const transferTool: ToolDef = {
+  name: TRANSFER_TOOL_NAME,
   title: "本机与远端之间传文件",
   description:
-    "在本地与远端之间原样搬运文件：op=put 是本机→远端，op=get 是远端→本机。默认不覆盖已存在的目标，确认覆盖传 overwrite=true。" +
-    "一次可以传多个条目，它们共用一条 SFTP 连接并按请求顺序返回结果；每条都回报两端字节数与是否一致，本机文件另给 sha256。" +
-    "列目录、看属性、读文本、建目录请改用 ssh_run（ls / stat / sed -n / cat / mkdir -p），不要用这里的参数。",
+    `在本地与远端之间原样搬运文件：op=put 是本机→远端，op=get 是远端→本机；~ 两端都展开到家目录。` +
+    "默认不覆盖已存在的目标，确认覆盖传 overwrite=true。" +
+    "一次可以传多个条目，共用一条 SFTP 连接并按请求顺序返回结果；每条回报两端字节数与是否一致，本机文件另给 sha256。" +
+    `列目录、看属性、读文本、建目录请改用 ${EXEC_TOOL_NAME} 的 ls / stat / sed -n / cat / mkdir -p。正反例见 skill「ssh-mcp」。`,
   keywords:
     "Keywords: sftp upload download file transfer send fetch remote file binary sha256 overwrite " +
     "copy to server copy from server size verify",
@@ -42,7 +45,7 @@ export const fileTool: ToolDef = {
   handler: async (ctx: BridgeCtx, raw: Record<string, unknown>) => {
     const a = raw as { host?: string; entries?: Entry[] };
     if (!a.host) {
-      bridgeError("bad_input", "缺少 host：传 ~/.ssh/config 里的别名或 user@ip（ssh_run 不传任何参数会返回主机清单）。");
+      bridgeError("bad_input", `缺少 host：传 ~/.ssh/config 里的别名或 user@ip（${EXEC_TOOL_NAME} 不传任何参数会返回主机清单）。`);
     }
     const entries = Array.isArray(a.entries) ? a.entries : [];
     if (entries.length === 0) {
@@ -54,7 +57,7 @@ export const fileTool: ToolDef = {
       bridgeError(
         "bad_input",
         `entries[${bad}].op="${String(entries[bad]!.op)}" 不行：只能是 put（本机→远端）或 get（远端→本机）。` +
-          "列目录用 ssh_run 的 ls -la，看属性用 stat，读文本用 sed -n 'a,bp'，建目录用 mkdir -p。",
+          `列目录用 ${EXEC_TOOL_NAME} 的 ls -la，看属性用 stat，读文本用 sed -n 'a,bp'，建目录用 mkdir -p。`,
         { bad_index: bad, allowed_ops: ALLOWED_OPS },
       );
     }

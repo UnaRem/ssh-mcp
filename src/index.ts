@@ -22,9 +22,9 @@ import { KnownHostsStore } from "./knownhosts.ts";
 import { SessionManager } from "./session.ts";
 import * as sftlops from "./sftlops.ts";
 import type { ResolvedTarget } from "./types.ts";
-import { DEFAULT_EXEC_TIMEOUT_MS, DEFAULT_READY_TIMEOUT_MS, DEFAULT_SESSION_TTL_MS, ok, VERSION } from "./tool.ts";
-import { fileTool } from "./tools/file.ts";
-import { runTool } from "./tools/run.ts";
+import { DEFAULT_EXEC_TIMEOUT_MS, DEFAULT_READY_TIMEOUT_MS, DEFAULT_SESSION_TTL_MS, EXEC_TOOL_NAME, ok, TRANSFER_TOOL_NAME, VERSION } from "./tool.ts";
+import { transferTool } from "./tools/file.ts";
+import { execTool } from "./tools/run.ts";
 
 const envInt = (name: string, dflt: number): number => {
   const v = Number(process.env[name]);
@@ -172,18 +172,19 @@ export function buildServer(): McpServer {
   const mcp = new McpServer(
     // name 会规范化成 PI-Desktop 工具前缀 `mcp_<name>_`（实测 2026-10-26：mcp.json 的 server 键不参与
     // 命名，只有这里的 name 决定前缀）。原 "ssh-mcp" 让工具名出现 ssh_..._ssh_ 交错重复段，
-    // 模型漏写段（mcp_ssh_mcp_batch）即回落文本；改 "ssh" 后为 mcp_ssh_ssh_run。
+    // 模型漏写段（mcp_ssh_mcp_batch）即回落文本。前缀已经带 ssh，工具名就不再重复：
+    // exec / transfer → 可见名 mcp_ssh_exec、mcp_ssh_transfer。
     { name: "ssh", version: VERSION },
     {
       instructions:
-        "这是一层 SSH 桥：远端 Linux 上跑命令只用 ssh_run，本机与远端之间搬文件只用 ssh_file。" +
+        `这是一层 SSH 桥：远端 Linux 上跑命令只用 ${EXEC_TOOL_NAME}，本机与远端之间搬文件只用 ${TRANSFER_TOOL_NAME}。` +
         "命令按原生 shell 写（多步用 && / ; / 管道，取尾部用 tail -n，区间用 sed -n，写文件用 heredoc，建目录用 mkdir -p）。" +
-        "命令的 exit_code != 0 是数据，不是工具错误。不知道有哪些主机时，ssh_run 不传任何参数就返回清单。" +
-        "要跨调用保持 cwd 与 export，就在 ssh_run 里加 session=\"keep\"。",
+        `命令的 exit_code != 0 是数据，不是工具错误。不知道有哪些主机时，${EXEC_TOOL_NAME} 不传任何参数就返回清单。` +
+        `要跨调用保持 cwd 与 export，就在 ${EXEC_TOOL_NAME} 里加 session="keep"。完整正反例见 skill「ssh-mcp」（随安装注入）。`,
     },
   );
 
-  for (const def of [runTool, fileTool]) register(mcp, ctx, def);
+  for (const def of [execTool, transferTool]) register(mcp, ctx, def);
   return mcp;
 }
 
@@ -204,7 +205,7 @@ function register(mcp: McpServer, bridge: BridgeCtx, def: ToolDef): void {
         return ok(await def.handler(bridge, args));
       } catch (e) {
         // 不在这里动连接池：参数/会话类错误与连接无关，误摘会把同一主机上的会话一起杀掉（实测：
-        // 一次 op 写错的 ssh_file 调用让 keep 会话消失了）。连接真的断了，ssh2 的 close/error 事件
+        // 一次 op 写错的 transfer 调用让 keep 会话消失了）。连接真的断了，ssh2 的 close/error 事件
         // 会把池项摘掉；空闲过 TTL 的连接在下次取用时判定丢弃。
         return fromError(e, def.name);
       }

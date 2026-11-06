@@ -10,6 +10,7 @@
     "test": "bun test",
     "lint": "bunx tsc --noEmit",
     "live": "bun run scripts/live-verify.ts",
+    "sync-skill": "bun run scripts/sync-skill.ts",
     "build": "bun build --compile src/index.ts --outfile dist/ssh-mcp.exe",
     "dist-verify": "bun run scripts/dist-verify.ts"
   },

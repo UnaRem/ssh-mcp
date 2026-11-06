@@ -110,9 +110,9 @@ async function main() {
       return `name=${v.name} version=${v.version}（与 package.json 一致）`;
     });
 
-    await check("tools/list 恰好 ssh_run / ssh_file", async () => {
+    await check("tools/list 恰好 exec / transfer", async () => {
       const tools = (await srv.client.listTools()).tools;
-      assert.deepEqual(tools.map((t) => t.name).sort(), ["ssh_file", "ssh_run"]);
+      assert.deepEqual(tools.map((t) => t.name).sort(), ["exec", "transfer"]);
       for (const t of tools) {
         assert.equal((t.inputSchema as any).additionalProperties, false, `${t.name} 少了 additionalProperties:false`);
       }
@@ -120,7 +120,7 @@ async function main() {
     });
 
     await check("自省模式返回主机清单", async () => {
-      const p = await call2(srv.client, "ssh_run", {});
+      const p = await call2(srv.client, "exec", {});
       assert.equal(p.mode, "inventory");
       const haveCfg = fs.existsSync(path.join(PROJECT_DIR, "config.local.json"));
       if (haveCfg) {
@@ -140,7 +140,7 @@ async function main() {
 
     await checkRemote("真实执行：新建连接并返回内核", async () => {
       const t = Date.now();
-      const p = await call2(srv.client, "ssh_run", { host: HOST, command: "uname -sr" });
+      const p = await call2(srv.client, "exec", { host: HOST, command: "uname -sr" });
       assert.equal(p.exit_code, 0);
       assert.match(String(p.stdout), /Linux/);
       assert.equal(p.host_key.status, "match", "host key 应当复用既有条目");
@@ -149,13 +149,13 @@ async function main() {
     });
 
     await checkRemote("连接池在产物里生效（第二次调用不建新连）", async () => {
-      const p = await call2(srv.client, "ssh_run", { host: HOST, command: "true" });
+      const p = await call2(srv.client, "exec", { host: HOST, command: "true" });
       assert.equal(p.connection, "reused");
       return `connection=reused ${p.duration_ms}ms`;
     });
 
     await checkRemote("命令失败仍是数据不是工具错误", async () => {
-      const c = await call(srv.client, "ssh_run", { host: HOST, command: "sh -c 'exit 7'" });
+      const c = await call(srv.client, "exec", { host: HOST, command: "sh -c 'exit 7'" });
       assert.equal(c.isError, false);
       assert.equal(c.p.ok, false);
       assert.equal(c.p.exit_code, 7);
@@ -163,7 +163,7 @@ async function main() {
     });
 
     await checkRemote("超时也带出已产生的输出（帧预留区的字节不被吞掉）", async () => {
-      const c = await call(srv.client, "ssh_run", { host: HOST, command: "echo BEFORE-OUT; sleep 6; echo AFTER-OUT", timeout_ms: 1200 });
+      const c = await call(srv.client, "exec", { host: HOST, command: "echo BEFORE-OUT; sleep 6; echo AFTER-OUT", timeout_ms: 1200 });
       assert.equal(c.isError, false, "超时应当是数据");
       assert.equal(c.p.timed_out, true);
       assert.match(String(c.p.stdout), /BEFORE-OUT/, "产物里超时前的输出丢了（源码版已修，产物没带上）");
@@ -173,18 +173,18 @@ async function main() {
     });
 
     await checkRemote("连续会话：跨调用保持 cwd，close 干净", async () => {
-      const s1 = await call2(srv.client, "ssh_run", { host: HOST, session: "keep", command: "cd /tmp && pwd" });
-      const s2 = await call2(srv.client, "ssh_run", { session: "keep", command: "pwd" });
+      const s1 = await call2(srv.client, "exec", { host: HOST, session: "keep", command: "cd /tmp && pwd" });
+      const s2 = await call2(srv.client, "exec", { session: "keep", command: "pwd" });
       assert.equal(s2.session_id, s1.session_id);
       assert.equal(s2.cwd, "/tmp");
-      const c = await call2(srv.client, "ssh_run", { session: "keep", session_op: "close" });
+      const c = await call2(srv.client, "exec", { session: "keep", session_op: "close" });
       assert.deepEqual(c.remaining, []);
       return `cwd=/tmp 已保持，closed=${JSON.stringify(c.closed)}`;
     });
 
-    await checkRemote("ssh_file put/get 与本地 sha256 一致", async () => {
+    await checkRemote("transfer put/get 与本地 sha256 一致", async () => {
       const tmpLocal = path.join(os.tmpdir(), `dist-verify-back-${process.pid}.json`);
-      const r = await call2(srv.client, "ssh_file", {
+      const r = await call2(srv.client, "transfer", {
         host: HOST,
         entries: [
           { op: "put", remote_path: REMOTE_FILE, local_path: LOCAL_FILE },
@@ -202,7 +202,7 @@ async function main() {
     });
 
     await check("多余参数被 schema 挡住（additionalProperties 生效）", async () => {
-      const c = await call(srv.client, "ssh_run", { host: HOST, command: "true", user: "x" });
+      const c = await call(srv.client, "exec", { host: HOST, command: "true", user: "x" });
       assert.equal(c.isError, true);
       assert.match(c.text, /user/);
       return c.text.slice(0, 90);
@@ -234,7 +234,7 @@ async function main() {
         const cfgHere = path.join(dirCfg, "config.local.json");
         // ① 旁边没有配置：首次启动自动生成模板，自省指向它
         client = await startBare();
-        let p = await call2(client, "ssh_run", {});
+        let p = await call2(client, "exec", {});
         assert.ok(fs.existsSync(cfgHere), "exe 同级没有自动生成 config.local.json");
         assert.equal(p.local_config_exists, true, "自动生成的模板没被承认");
         assert.equal(path.normalize(p.local_config_path), path.normalize(cfgHere), "模板路径不在 exe 同级");
@@ -244,7 +244,7 @@ async function main() {
         // ② 用户照着模板填好：新实例直接生效，且模板不被再次覆盖
         fs.writeFileSync(cfgHere, JSON.stringify({ hosts: { probehost: { hostname: "192.0.2.7", user: "u" } } }));
         client = await startBare();
-        p = await call2(client, "ssh_run", {});
+        p = await call2(client, "exec", {});
         assert.ok((p.hosts ?? []).some((h: any) => h.name === "probehost"), "填好的配置没有生效");
         assert.ok(!(p.hosts ?? []).some((h: any) => h.name === "example"), "已有配置被模板覆盖了（只能创建，不许改写）");
         return `模板生成与生效都在 ${cfgHere}`;
@@ -256,7 +256,7 @@ async function main() {
     });
 
     await checkRemote("清理远端临时文件", async () => {
-      const p = await call2(srv.client, "ssh_run", { host: HOST, command: `rm -f ${REMOTE_FILE} && echo 已清理` });
+      const p = await call2(srv.client, "exec", { host: HOST, command: `rm -f ${REMOTE_FILE} && echo 已清理` });
       return String(p.stdout).trim();
     });
   } finally {
