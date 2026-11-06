@@ -135,12 +135,12 @@ async function main() {
   await check("A1 对外只有两个工具", async () => {
     const listed = await cl.listTools();
     const names = listed.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["ssh_file", "ssh_run"], "工具面漂移：" + names.join(","));
+    assert.deepEqual(names, ["exec", "transfer"], "工具面漂移：" + names.join(","));
     return `tools=${names.join(",")}；描述都含 Keywords=${listed.tools.every((t) => String(t.description).includes("Keywords:"))}`;
   });
 
   await check("A2 不传任何参数 = 自省（主机清单 + 配置来源 + 活动状态）", async () => {
-    const p = await call2(cl, "ssh_run", {});
+    const p = await call2(cl, "exec", {});
     assert.equal(p.mode, "inventory");
     const names = (p.hosts as any[]).map((h) => h.name);
     assert.ok(names.includes("los"), "缺 los");
@@ -150,14 +150,14 @@ async function main() {
   });
 
   await check("A3 未知主机：error_code=unknown_host 并回可用别名", async () => {
-    const p = await expectError(cl, "ssh_run", { host: "definitely-not-a-host", command: "pwd" }, "unknown_host");
+    const p = await expectError(cl, "exec", { host: "definitely-not-a-host", command: "pwd" }, "unknown_host");
     assert.ok((p.available_hosts as string[]).includes("los"));
     assert.ok((p.available_hosts as string[]).includes(HOST));
     return `available_hosts=${JSON.stringify(p.available_hosts)}`;
   });
 
   await check("A4 真实执行 uname -sr", async () => {
-    const p = await call2(cl, "ssh_run", { host: HOST, command: "uname -sr" });
+    const p = await call2(cl, "exec", { host: HOST, command: "uname -sr" });
     assert.equal(p.exit_code, 0);
     assert.equal(p.ok, true);
     assert.match(p.stdout, /Linux 6\.8\.0/);
@@ -165,7 +165,7 @@ async function main() {
   });
 
   await check("A4 失败命令是数据：isError=false、顶层 ok=false、exit_code 与 stderr 分开", async () => {
-    const c = await call(cl, "ssh_run", { host: HOST, command: "sh -c 'echo to stderr >&2; exit 7'" });
+    const c = await call(cl, "exec", { host: HOST, command: "sh -c 'echo to stderr >&2; exit 7'" });
     assert.equal(c.isError, false, "被当成工具错误抛出了");
     assert.equal(c.p.ok, false, "命令失败时顶层 ok 必须是 false");
     assert.equal(c.p.exit_code, 7);
@@ -179,7 +179,7 @@ async function main() {
     const s = await startServer({ SSH_MCP_KNOWN_HOSTS: khCopy });
     try {
       const t0 = Date.now();
-      const p = await call2(s.client, "ssh_run", { host: KEYFIRST, command: "id -un" });
+      const p = await call2(s.client, "exec", { host: KEYFIRST, command: "id -un" });
       const ms = Date.now() - t0;
       assert.equal(p.connection, "new");
       assert.deepEqual(p.auth_methods_attempted, ["publickey", "password"], "认证顺序不对");
@@ -194,7 +194,7 @@ async function main() {
 
   await check("A5 密钥被拒且无密码：error_code=auth_failed，快速失败不挂死", async () => {
     const t0 = Date.now();
-    const p = await expectError(cl, "ssh_run", { host: NEG_HOST, command: "true" }, "auth_failed");
+    const p = await expectError(cl, "exec", { host: NEG_HOST, command: "true" }, "auth_failed");
     const ms = Date.now() - t0;
     assert.ok(/认证|auth/i.test(String(p.error)), "原因不可读：" + p.error);
     assert.ok(ms < 12000, `耗时 ${ms}ms 超过 readyTimeout 上限`);
@@ -203,28 +203,31 @@ async function main() {
 
   await check("A6 多步用 &&（无 commands 参数），单条命令一次往返 + 连接复用", async () => {
     const t0 = Date.now();
-    const p = await call2(cl, "ssh_run", { host: HOST, command: `mkdir -p ${remoteDir} && cd ${remoteDir} && pwd` });
+    const p = await call2(cl, "exec", { host: HOST, command: `mkdir -p ${remoteDir} && cd ${remoteDir} && pwd` });
     const ms = Date.now() - t0;
     assert.equal(p.exit_code, 0);
     assert.equal(p.stdout.trim(), remoteDir);
     const t1 = Date.now();
-    const again = await call2(cl, "ssh_run", { host: HOST, command: "pwd" });
+    const again = await call2(cl, "exec", { host: HOST, command: "pwd" });
     const msReuse = Date.now() - t1;
     assert.equal(again.connection, "reused");
-    assert.ok(msReuse < ms, "复用没有比新建连接更快");
+    // 不断言 msReuse < ms：到这一步连接池里早已有这条连接（A4 起就是同端点），两次都是 reused，
+    // 先后只取决于命令长度与抖动——那是噪声不是契约。复用的可观察契约是 connection=reused
+    // 且耗时远小于新建（实测新建 ~1.8s，复用 5–60ms）。
+    assert.ok(msReuse < 1000, `复用的调用用了 ${msReuse}ms，不像复用（新建实测 ~1.8s）`);
     return `一条命令完成 mkdir+cd+pwd，用时=${ms}ms；第二次 connection=reused，用时=${msReuse}ms`;
   });
 
   let keepId = "";
   await check("A7 session=keep：建立并跨调用保持 cwd 与 env", async () => {
-    const o = await call2(cl, "ssh_run", { host: HOST, session: "keep", command: `cd ${remoteDir} && export MCP_LIVE=41 && pwd` });
+    const o = await call2(cl, "exec", { host: HOST, session: "keep", command: `cd ${remoteDir} && export MCP_LIVE=41 && pwd` });
     keepId = String(o.session_id);
     assert.match(keepId, /^s_/);
     assert.equal(o.exit_code, 0);
     assert.equal(o.cwd, remoteDir);
     assert.ok(o.idle_ttl_ms > 0);
     // 第二次不传 host：只有一个活动会话时自动复用（更聪明的默认值）
-    const b = await call2(cl, "ssh_run", { session: "keep", command: "pwd && echo 变量=$MCP_LIVE" });
+    const b = await call2(cl, "exec", { session: "keep", command: "pwd && echo 变量=$MCP_LIVE" });
     assert.equal(b.session_id, keepId);
     assert.equal(b.cwd, remoteDir);
     assert.equal(b.stdout.trim(), `${remoteDir}\n变量=41`);
@@ -232,17 +235,17 @@ async function main() {
   });
 
   await check("A7 session_op=reset：回到登录目录且 env 清空", async () => {
-    const r = await call2(cl, "ssh_run", { session: keepId, session_op: "reset" });
+    const r = await call2(cl, "exec", { session: keepId, session_op: "reset" });
     assert.notEqual(r.cwd_before, r.cwd);
     assert.match(String(r.cwd), /^\/home\//);
-    const v = await call2(cl, "ssh_run", { session: keepId, command: "echo 变量=[$MCP_LIVE]" });
+    const v = await call2(cl, "exec", { session: keepId, command: "echo 变量=[$MCP_LIVE]" });
     assert.equal(v.stdout.trim(), "变量=[]");
     return `cwd_before=${r.cwd_before} → cwd=${r.cwd}，环境变量已清空`;
   });
 
   await check("A8 吞 stdin 的命令（cat）不挂起", async () => {
     const t0 = Date.now();
-    const p = await call2(cl, "ssh_run", { session: keepId, command: "cat" });
+    const p = await call2(cl, "exec", { session: keepId, command: "cat" });
     const ms = Date.now() - t0;
     assert.equal(p.exit_code, 0);
     assert.notEqual(p.timed_out, true);
@@ -251,36 +254,36 @@ async function main() {
   });
 
   await check("A8 未闭合引号：bash -n 预检报错，命令不执行，会话仍可用", async () => {
-    const p = await call2(cl, "ssh_run", { session: keepId, command: "echo '未闭合" });
+    const p = await call2(cl, "exec", { session: keepId, command: "echo '未闭合" });
     assert.equal(p.syntax_check, "failed");
     assert.equal(p.exit_code, null);
     assert.match(String(p.error), /未执行/);
     assert.match(String(p.stderr), /EOF|quote|引号/);
-    const alive = await call2(cl, "ssh_run", { session: keepId, command: "pwd" });
+    const alive = await call2(cl, "exec", { session: keepId, command: "pwd" });
     assert.equal(alive.exit_code, 0);
     return `预检失败：${String(p.stderr).trim().split("\n")[0]}；会话仍可用`;
   });
 
   await check("A8 后台进程挂住 fd：哨兵超时 + background_suspect + 自动重开", async () => {
     const t0 = Date.now();
-    const p = await call2(cl, "ssh_run", { session: keepId, command: "tail -f /dev/null", timeout_ms: 1500 });
+    const p = await call2(cl, "exec", { session: keepId, command: "tail -f /dev/null", timeout_ms: 1500 });
     const ms = Date.now() - t0;
     assert.equal(p.timed_out, true);
     assert.equal(p.background_suspect, true);
     assert.equal(p.session_restarted, true);
     assert.ok(ms < 6000, `用了 ${ms}ms，太慢`);
-    const alive = await call2(cl, "ssh_run", { session: keepId, command: "pwd" });
+    const alive = await call2(cl, "exec", { session: keepId, command: "pwd" });
     assert.equal(alive.exit_code, 0);
     return `timed_out/background_suspect/session_restarted 均为 true，${ms}ms 返回；随后命令仍可用`;
   });
 
   await check("A9 命令超时：timed_out=true 且 server 不死", async () => {
     const t0 = Date.now();
-    const p = await call2(cl, "ssh_run", { host: HOST, command: "sleep 5", timeout_ms: 1000 });
+    const p = await call2(cl, "exec", { host: HOST, command: "sleep 5", timeout_ms: 1000 });
     const ms = Date.now() - t0;
     assert.equal(p.timed_out, true);
     assert.ok(ms < 4000, `超时没生效：${ms}ms`);
-    const after = await call2(cl, "ssh_run", { host: HOST, command: "echo 还活着" });
+    const after = await call2(cl, "exec", { host: HOST, command: "echo 还活着" });
     assert.equal(after.stdout.trim(), "还活着");
     return `${ms}ms 返回 timed_out=true，随后命令正常`;
   });
@@ -290,7 +293,7 @@ async function main() {
     // 短输出的命令超时后 stdout 必然是空串（实测 2026-10-30 部署版）。
     const marker = `${remoteDir}/timeout-keep.flag`;
     const t0 = Date.now();
-    const p = await call2(cl, "ssh_run", {
+    const p = await call2(cl, "exec", {
       host: HOST,
       command: `echo BEFORE-OUT; sleep 5; touch ${marker}; echo AFTER-OUT`,
       timeout_ms: 1200,
@@ -304,7 +307,7 @@ async function main() {
     assert.match(String(p.error), /nohup/);
     // 文案里那句「不会终止」是实测事实，这里复查一次：等远端那条命令自己跑完并落下标记文件
     await Bun.sleep(4500);
-    const probe = await call2(cl, "ssh_run", { host: HOST, command: `test -e ${marker} && echo 仍在运行 || echo 已被终止` });
+    const probe = await call2(cl, "exec", { host: HOST, command: `test -e ${marker} && echo 仍在运行 || echo 已被终止` });
     assert.equal(String(probe.stdout).trim(), "仍在运行", "文案说不会终止，实际却被终止了（OpenSSH 行为变了，文案要改）");
     return `${ms}ms 返回 timed_out=true 且 stdout 含 BEFORE-OUT；5s 后标记文件已生成 → 「不会终止远端命令」成立`;
   });
@@ -312,19 +315,19 @@ async function main() {
   await check("A9 默认即上限：不传 timeout_ms 也只等 5s；传更大的值被截并回报 timeout_capped", async () => {
     // 契约锁的是「只截不拒」：schema 的 maximum 会让 SDK 在进 handler 前抛，命令不执行也没有 structuredContent
     const t0 = Date.now();
-    const a = await call2(cl, "ssh_run", { host: HOST, command: "sleep 8; echo 不该到这里" });
+    const a = await call2(cl, "exec", { host: HOST, command: "sleep 8; echo 不该到这里" });
     const ms = Date.now() - t0;
     assert.equal(a.timed_out, true, "默认上限没生效");
     assert.ok(ms < 9000, `默认 5s 上限没生效：${ms}ms`);
-    const b = await call2(cl, "ssh_run", { host: HOST, command: "sleep 6; echo 不该到这里", timeout_ms: 300_000 });
+    const b = await call2(cl, "exec", { host: HOST, command: "sleep 6; echo 不该到这里", timeout_ms: 300_000 });
     assert.equal(b.timed_out, true, "被截断后应当照样执行并超时");
     assert.equal(b.timeout_capped, true, "被截断这件事必须在结果里可见");
     assert.equal(b.timeout_ms, 5000, "生效值应当是被截后的上限（默认即上限）");
     assert.equal(b.timeout_ms_requested, 300_000);
     assert.match(String(b.error), /nohup/, "超时文案没指向起后台的写法");
-    const after = await call2(cl, "ssh_run", { host: HOST, command: "echo 还活着" });
+    const after = await call2(cl, "exec", { host: HOST, command: "echo 还活着" });
     assert.equal(String(after.stdout).trim(), "还活着");
-    const h = await call2(cl, "ssh_run", { host: HOST, command: "sleep 4; echo warmup-done" });
+    const h = await call2(cl, "exec", { host: HOST, command: "sleep 4; echo warmup-done" });
     assert.notEqual(h.timed_out, true, "4 秒的活不该撞上限");
     assert.match(String(h.stdout), /warmup-done/);
     assert.match(String(h.hint), /nohup/, "命令里的 sleep 等待没有换法提示");
@@ -333,9 +336,9 @@ async function main() {
   });
 
   await check("A9 输出预算：truncated=true 并回报真实总量", async () => {
-    const size = await call2(cl, "ssh_run", { host: HOST, command: "head -c 4096 /dev/zero | tr '\\0' 'a' | wc -c" });
+    const size = await call2(cl, "exec", { host: HOST, command: "head -c 4096 /dev/zero | tr '\\0' 'a' | wc -c" });
     assert.equal(String(size.stdout).trim(), "4096");
-    const p = await call2(cl, "ssh_run", { host: HOST, command: "head -c 4096 /dev/zero | tr '\\0' 'a'", max_output_bytes: 1000 });
+    const p = await call2(cl, "exec", { host: HOST, command: "head -c 4096 /dev/zero | tr '\\0' 'a'", max_output_bytes: 1000 });
     assert.equal(p.truncated, true);
     assert.equal(p.stdout_bytes, 4096);
     assert.ok(p.stdout.length < 2000, "预算没生效");
@@ -344,38 +347,38 @@ async function main() {
   });
 
   await check("A10 文件操作走原生命令：heredoc 写 + sed 区间 + grep 过滤", async () => {
-    const w = await call2(cl, "ssh_run", {
+    const w = await call2(cl, "exec", {
       host: HOST,
       command: `cat > ${remoteDir}/conf.conf <<'EOF'\nfirst=1\nsecond=2\nthird=3\nEOF\nwc -l < ${remoteDir}/conf.conf`,
     });
     assert.equal(w.exit_code, 0);
     assert.equal(String(w.stdout).trim(), "3");
-    const mid = await call2(cl, "ssh_run", { host: HOST, command: `sed -n '2p' ${remoteDir}/conf.conf` });
+    const mid = await call2(cl, "exec", { host: HOST, command: `sed -n '2p' ${remoteDir}/conf.conf` });
     assert.equal(mid.stdout.trim(), "second=2");
-    const cnt = await call2(cl, "ssh_run", { host: HOST, command: `grep -c '=' ${remoteDir}/conf.conf` });
+    const cnt = await call2(cl, "exec", { host: HOST, command: `grep -c '=' ${remoteDir}/conf.conf` });
     assert.equal(cnt.stdout.trim(), "3");
     return "heredoc 写入 3 行，sed -n '2p' 与 grep -c 都由远端 shell 完成（没有 read/write 参数）";
   });
 
-  await check("A11 ssh_file put/get：字节与 sha256 一致，远端 sha256sum 交叉核对", async () => {
-    const put = await call2(cl, "ssh_file", { host: HOST, entries: [{ op: "put", remote_path: `${remoteDir}/up.bin`, local_path: localFile }] });
+  await check("A11 transfer put/get：字节与 sha256 一致，远端 sha256sum 交叉核对", async () => {
+    const put = await call2(cl, "transfer", { host: HOST, entries: [{ op: "put", remote_path: `${remoteDir}/up.bin`, local_path: localFile }] });
     assert.equal(put.ok, true);
     assert.equal(put.entries[0].bytes_match, true);
     assert.equal(put.entries[0].sha256_local, localSha);
-    const remote = await call2(cl, "ssh_run", { host: HOST, command: `sha256sum ${remoteDir}/up.bin` });
+    const remote = await call2(cl, "exec", { host: HOST, command: `sha256sum ${remoteDir}/up.bin` });
     assert.equal(String(remote.stdout).trim().split(/\s+/)[0], localSha, "远端 sha256sum 与本地不一致");
-    const back = await call2(cl, "ssh_file", { host: HOST, entries: [{ op: "get", remote_path: `${remoteDir}/up.bin`, local_path: localBack }] });
+    const back = await call2(cl, "transfer", { host: HOST, entries: [{ op: "get", remote_path: `${remoteDir}/up.bin`, local_path: localBack }] });
     assert.equal(back.entries[0].bytes_match, true);
     assert.equal(sha256(fs.readFileSync(localBack)), localSha, "下载回来的内容不一致");
     return `本地 sha256=${localSha.slice(0, 16)}… 远端 sha256sum 一致；get 回本地字节一致`;
   });
 
   await check("A11 默认拒绝覆盖：条目带 error_code=exists（是数据，不是工具错误），overwrite=true 才覆盖", async () => {
-    const dup = await call(cl, "ssh_file", { host: HOST, entries: [{ op: "put", remote_path: `${remoteDir}/up.bin`, local_path: localFile }] });
+    const dup = await call(cl, "transfer", { host: HOST, entries: [{ op: "put", remote_path: `${remoteDir}/up.bin`, local_path: localFile }] });
     assert.equal(dup.isError, false, "单条失败不应是工具错误");
     assert.equal(dup.p.ok, false);
     assert.equal(dup.p.entries[0].error_code, "exists");
-    const forced = await call2(cl, "ssh_file", {
+    const forced = await call2(cl, "transfer", {
       host: HOST,
       entries: [{ op: "put", remote_path: `${remoteDir}/up.bin`, local_path: localFile, overwrite: true }],
     });
@@ -384,7 +387,7 @@ async function main() {
   });
 
   await check("A11 一条连接传多个条目，按请求顺序返回；op 写错整体拒绝", async () => {
-    const multi = await call2(cl, "ssh_file", {
+    const multi = await call2(cl, "transfer", {
       host: HOST,
       entries: [
         { op: "put", remote_path: `${remoteDir}/a.txt`, local_path: localFile },
@@ -397,17 +400,17 @@ async function main() {
     assert.deepEqual(multi.entries.map((e: any) => e.op), ["put", "get", "get"]);
     assert.equal(multi.entries[2].error_code, "not_found");
     assert.equal(sha256(fs.readFileSync(path.join(tmp, "a.copy"))), localSha);
-    const bad = await expectError(cl, "ssh_file", { host: HOST, entries: [{ op: "list", remote_path: "/tmp", local_path: localFile }] }, "bad_input");
+    const bad = await expectError(cl, "transfer", { host: HOST, entries: [{ op: "list", remote_path: "/tmp", local_path: localFile }] }, "bad_input");
     assert.deepEqual(bad.allowed_ops, ["put", "get"]);
     // 用法错误与连接无关：不能把同主机的连接与会话一起杀掉（实测曾因此让 keep 会话消失）
-    const inv = await call2(cl, "ssh_run", {});
+    const inv = await call2(cl, "exec", {});
     assert.ok((inv.active_sessions as any[]).some((s) => s.session_id === keepId), "错误调用后 keep 会话不见了");
     assert.ok((inv.active_connections as string[]).length > 0, "错误调用后连接池被清空了");
     return `3 条共用一条 SFTP 连接；第 3 条 not_found；op=list 被拒并列出 allowed_ops；错误调用未影响连接与会话`;
   });
 
   await check("A12 复用真实 known_hosts 条目：match 且不改动文件", async () => {
-    const p = await call2(cl, "ssh_run", { host: HOST, command: "true" });
+    const p = await call2(cl, "exec", { host: HOST, command: "true" });
     assert.equal(p.host_key.status, "match");
     assert.ok(p.host_key.fingerprint, "无指纹");
     const copyAfter = fs.readFileSync(khCopy);
@@ -416,17 +419,17 @@ async function main() {
   });
 
   await check("A2 参数多余不静默丢弃（strict schema）", async () => {
-    const c = await call(cl, "ssh_run", { host: HOST, command: "true", user: "root", port: 22 });
+    const c = await call(cl, "exec", { host: HOST, command: "true", user: "root", port: 22 });
     assert.equal(c.isError, true, "多余参数应被拒");
     assert.match(c.text, /user/);
     const listed = await cl.listTools();
-    const run = listed.tools.find((t) => t.name === "ssh_run")!;
+    const run = listed.tools.find((t) => t.name === "exec")!;
     assert.equal((run.inputSchema as any).additionalProperties, false, "发布的 schema 应说明只接受这些参数");
     return "user/port 被拒；published additionalProperties=false";
   });
 
   await check("A1 会话清理 + server 关闭后无残留", async () => {
-    const cs = await call2(cl, "ssh_run", { session: keepId, session_op: "close" });
+    const cs = await call2(cl, "exec", { session: keepId, session_op: "close" });
     assert.deepEqual(cs.remaining, []);
     await srv.close();
     return "session_op=close 完成，remaining=[]，MCP 客户端已断开";
@@ -436,13 +439,13 @@ async function main() {
   await check("A13 TOFU 首次连接只追加一行，第二次 match", async () => {
     const s2 = await startServer({ SSH_MCP_KNOWN_HOSTS: khEmpty, SSH_MCP_CONN_TTL_MS: "300" });
     try {
-      const first = await call2(s2.client, "ssh_run", { host: HOST, command: "true" });
+      const first = await call2(s2.client, "exec", { host: HOST, command: "true" });
       assert.equal(first.host_key.status, "unknown");
       const lines1 = fs.readFileSync(khEmpty, "utf8").split("\n").filter(Boolean);
       assert.equal(lines1.length, 1, `应当只追加 1 行，实际 ${lines1.length}`);
       assert.ok(lines1[0]!.includes(NEG_IP) && lines1[0]!.includes("ssh-ed25519"), "追加行格式不对：" + lines1[0]);
       await Bun.sleep(1200); // 连接池按 TTL 过期，强制第二次走新连接、重新校验 host key
-      const second = await call2(s2.client, "ssh_run", { host: HOST, command: "true" });
+      const second = await call2(s2.client, "exec", { host: HOST, command: "true" });
       assert.equal(second.host_key.status, "match");
       const lines2 = fs.readFileSync(khEmpty, "utf8").split("\n").filter(Boolean);
       assert.equal(lines2.length, 1, "重复追加了");
@@ -455,7 +458,7 @@ async function main() {
   await check("A13 host key 不匹配：error_code=host_key_mismatch 并报告实际指纹", async () => {
     const s3 = await startServer({ SSH_MCP_KNOWN_HOSTS: khWrong });
     try {
-      const p = await expectError(s3.client, "ssh_run", { host: HOST, command: "true" }, "host_key_mismatch");
+      const p = await expectError(s3.client, "exec", { host: HOST, command: "true" }, "host_key_mismatch");
       assert.match(String(p.error), /host key|主机密钥|指纹|fingerprint/i);
       assert.ok(p.host_key_fingerprint, "没有报告实际指纹");
       return `拒绝原因=${p.error}；实际指纹=${p.host_key_fingerprint}`;
@@ -467,10 +470,10 @@ async function main() {
   await check("A14 会话空闲超过 TTL：error_code=no_session 并说明怎么重新开始", async () => {
     const s4 = await startServer({ SSH_MCP_KNOWN_HOSTS: khCopy, SSH_MCP_SESSION_TTL_MS: "1500" });
     try {
-      const o = await call2(s4.client, "ssh_run", { host: HOST, session: "keep", command: "pwd" });
+      const o = await call2(s4.client, "exec", { host: HOST, session: "keep", command: "pwd" });
       assert.equal(o.idle_ttl_ms, 1500);
       await Bun.sleep(2200);
-      const p = await expectError(s4.client, "ssh_run", { session: o.session_id, command: "pwd" }, "no_session");
+      const p = await expectError(s4.client, "exec", { session: o.session_id, command: "pwd" }, "no_session");
       assert.match(String(p.error), /TTL/);
       assert.match(String(p.error), /keep/);
       return String(p.error).slice(0, 200);
@@ -482,7 +485,7 @@ async function main() {
   // ============ 收尾：清掉远端临时目录 ============
   const s5 = await startServer({ SSH_MCP_KNOWN_HOSTS: khCopy });
   try {
-    const p = await call2(s5.client, "ssh_run", { host: HOST, command: `rm -rf ${remoteDir} && echo 已清理` });
+    const p = await call2(s5.client, "exec", { host: HOST, command: `rm -rf ${remoteDir} && echo 已清理` });
     console.log("远端临时目录：" + String(p.stdout).trim());
   } finally {
     await s5.close();
